@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <group
+        android:pivotX="54"
+        android:pivotY="54">
+        <!-- Wi-Fi Outer Arc -->
+        <path
+            android:strokeColor="#BB66FF"
+            android:strokeWidth="3.5"
+            android:strokeLineCap="round"
+            android:pathData="M34,42 A26,26 0 0,1 74,42" />
+        <!-- Wi-Fi Middle Arc -->
+        <path
+            android:strokeColor="#9933FF"
+            android:strokeWidth="3.5"
+            android:strokeLineCap="round"
+            android:pathData="M40,51 A18,18 0 0,1 68,51" />
+        <!-- Wi-Fi Inner Arc -->
+        <path
+            android:strokeColor="#7D2CCB"
+            android:strokeWidth="3.5"
+            android:strokeLineCap="round"
+            android:pathData="M46,60 A10,10 0 0,1 62,60" />
+        <!-- Center Transceiver Dot (Signal Node) in Lime Green -->
+        <path
+            android:fillColor="#00FF66"
+            android:pathData="M54,67 A3.5,3.5 0 1,1 53.9,67" />
+        <!-- Spatial Crosshair Targeting Marks -->
+        <path
+            android:strokeColor="#BB66FF"
+            android:strokeWidth="1.5"
+            android:strokeLineCap="square"
+            android:pathData="M30,30 L30,36 M30,30 L36,30" />
+        <path
+            android:strokeColor="#BB66FF"
+            android:strokeWidth="1.5"
+            android:strokeLineCap="square"
+            android:pathData="M78,30 L78,36 M78,30 L72,30" />
+        <path
+            android:strokeColor="#BB66FF"
+            android:strokeWidth="1.5"
+            android:strokeLineCap="square"
+            android:pathData="M30,78 L30,72 M30,78 L36,78" />
+        <path
+            android:strokeColor="#BB66FF"
+            android:strokeWidth="1.5"
+            android:strokeLineCap="square"
+            android:pathData="M78,78 L78,72 M78,78 L72,78" />
+        <!-- Terminal Prompt Accent -->
+        <path
+            android:strokeColor="#00FF66"
+            android:strokeWidth="2.0"
+            android:strokeLineCap="round"
+            android:pathData="M48,74 L52,78 L48,82" />
+        <path
+            android:strokeColor="#00FF66"
+            android:strokeWidth="2.0"
+            android:strokeLineCap="round"
+            android:pathData="M55,82 L60,82" />
+    </group>
+</vector>

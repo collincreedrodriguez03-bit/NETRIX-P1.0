@@ -1,0 +1,6 @@
+{
+  "name": "NETRIX",
+  "description": "Mobile Network Intelligence and Wi-Fi Surveying System with ARM spatial mapping and shared telemetry diagnostics.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

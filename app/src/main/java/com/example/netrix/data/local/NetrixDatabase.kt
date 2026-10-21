@@ -12,7 +12,7 @@ import androidx.room.RoomDatabase
         NetworkObservationEntity::class,
         ActiveProbeResultEntity::class
     ],
-    version = 1,
+    version = 2,
     exportSchema = false
 )
 abstract class NetrixDatabase : RoomDatabase() {
@@ -24,13 +24,25 @@ abstract class NetrixDatabase : RoomDatabase() {
 
         fun getDatabase(context: Context): NetrixDatabase {
             return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
-                    context.applicationContext,
-                    NetrixDatabase::class.java,
-                    "netrix_telemetry.db"
-                )
-                    .fallbackToDestructiveMigration(dropAllTables = false)
-                    .build()
+                val instance = try {
+                    Room.databaseBuilder(
+                        context.applicationContext,
+                        NetrixDatabase::class.java,
+                        "netrix_telemetry.db"
+                    )
+                        .fallbackToDestructiveMigration(dropAllTables = true)
+                        .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
+                        .build()
+                } catch (e: Throwable) {
+                    android.util.Log.e("NetrixDatabase", "Error initializing disk database: ${e.message}", e)
+                    Room.inMemoryDatabaseBuilder(
+                        context.applicationContext,
+                        NetrixDatabase::class.java
+                    )
+                        .fallbackToDestructiveMigration(dropAllTables = true)
+                        .fallbackToDestructiveMigrationOnDowngrade(dropAllTables = true)
+                        .build()
+                }
                 INSTANCE = instance
                 instance
             }

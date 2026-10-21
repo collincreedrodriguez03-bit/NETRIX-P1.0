@@ -7,10 +7,13 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -20,6 +23,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -31,6 +35,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -59,11 +64,15 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-        setContent {
-            NetrixTheme {
-                MainTerminalApp(viewModel = viewModel)
+        try {
+            enableEdgeToEdge()
+            setContent {
+                NetrixTheme {
+                    MainTerminalApp(viewModel = viewModel)
+                }
             }
+        } catch (t: Throwable) {
+            android.util.Log.e("MainActivity", "Error during MainActivity startup: ${t.message}", t)
         }
     }
 }
@@ -87,7 +96,8 @@ fun MainTerminalApp(viewModel: NetrixViewModel) {
         modifier = Modifier
             .fillMaxSize()
             .background(NetrixVoid)
-            .statusBarsPadding(),
+            .statusBarsPadding()
+            .imePadding(),
         containerColor = NetrixVoid
     ) { innerPadding ->
         Box(
@@ -100,7 +110,7 @@ fun MainTerminalApp(viewModel: NetrixViewModel) {
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .height(44.dp)
+                        .height(42.dp)
                         .background(NetrixSurface)
                         .border(1.dp, NetrixBorder)
                         .padding(horizontal = 8.dp),
@@ -109,24 +119,24 @@ fun MainTerminalApp(viewModel: NetrixViewModel) {
                 ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         TerminalButton(
                             text = if (isDrawerOpen) "[X]" else "[=]",
                             onClick = { viewModel.toggleDrawer() },
-                            modifier = Modifier.size(34.dp)
+                            modifier = Modifier.size(32.dp)
                         )
                         Text(
                             text = "NETRIX@android:~#",
                             color = NetrixPrimary,
-                            fontSize = 12.sp,
+                            fontSize = 11.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
                         )
                         Text(
                             text = currentTab.tag,
                             color = NetrixGreen,
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
                         )
@@ -134,13 +144,13 @@ fun MainTerminalApp(viewModel: NetrixViewModel) {
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         StatusIndicatorDot(isActive = link.isConnected)
                         Text(
                             text = link.rssi?.let { "$it dBm" } ?: "OFFLINE",
                             color = if (link.isConnected) NetrixGreen else NetrixTextDim,
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
                         )
@@ -162,6 +172,20 @@ fun MainTerminalApp(viewModel: NetrixViewModel) {
                 }
             }
 
+            // Dark Scrim when Navigation Drawer is Open
+            AnimatedVisibility(
+                visible = isDrawerOpen,
+                enter = fadeIn(),
+                exit = fadeOut()
+            ) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(Color.Black.copy(alpha = 0.65f))
+                        .clickable { viewModel.toggleDrawer() }
+                )
+            }
+
             // Slide-out Retractable Navigation Drawer
             AnimatedVisibility(
                 visible = isDrawerOpen,
@@ -172,6 +196,7 @@ fun MainTerminalApp(viewModel: NetrixViewModel) {
                 TerminalNavigationDrawer(
                     currentTab = currentTab,
                     onSelectTab = { viewModel.selectTab(it) },
+                    onCloseDrawer = { viewModel.toggleDrawer() },
                     linkConnected = link.isConnected,
                     samplesCount = samples.size
                 )
@@ -184,6 +209,7 @@ fun MainTerminalApp(viewModel: NetrixViewModel) {
 fun TerminalNavigationDrawer(
     currentTab: NavigationTab,
     onSelectTab: (NavigationTab) -> Unit,
+    onCloseDrawer: () -> Unit,
     linkConnected: Boolean,
     samplesCount: Int,
     modifier: Modifier = Modifier
@@ -197,20 +223,34 @@ fun TerminalNavigationDrawer(
             .padding(12.dp)
     ) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            // Header
-            Text(
-                text = "NETRIX v1.0",
-                color = NetrixPrimary,
-                fontSize = 15.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace
-            )
-            Text(
-                text = "Network Intelligence Terminal",
-                color = NetrixTextDim,
-                fontSize = 9.sp,
-                fontFamily = FontFamily.Monospace
-            )
+            // Header with explicit close button
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column {
+                    Text(
+                        text = "NETRIX v1.0",
+                        color = NetrixPrimary,
+                        fontSize = 14.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "Terminal Intelligence",
+                        color = NetrixTextDim,
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+
+                TerminalButton(
+                    text = "[X]",
+                    onClick = onCloseDrawer,
+                    modifier = Modifier.size(30.dp)
+                )
+            }
 
             Box(
                 modifier = Modifier
@@ -233,11 +273,11 @@ fun TerminalNavigationDrawer(
                     text = tab.label,
                     isSelected = isSelected,
                     onClick = { onSelectTab(tab) },
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier.fillMaxWidth().height(42.dp)
                 )
             }
 
-            Spacer(modifier = Modifier.height(8.dp))
+            Spacer(modifier = Modifier.height(6.dp))
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -262,7 +302,7 @@ fun TerminalNavigationDrawer(
                 Text(if (linkConnected) " Wi-Fi: Connected" else " Wi-Fi: Disconnected", color = NetrixText, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
             }
             Text(
-                text = " Samples: $samplesCount",
+                text = " Survey Points: $samplesCount",
                 color = NetrixText,
                 fontSize = 10.sp,
                 fontFamily = FontFamily.Monospace

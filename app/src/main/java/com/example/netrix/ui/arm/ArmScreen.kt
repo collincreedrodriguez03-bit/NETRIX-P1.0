@@ -1,5 +1,11 @@
 package com.example.netrix.ui.arm
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -23,6 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -32,6 +39,7 @@ import com.example.netrix.model.VitalMetric
 import com.example.netrix.ui.NetrixViewModel
 import com.example.netrix.ui.components.TerminalButton
 import com.example.netrix.ui.components.TerminalCard
+import com.example.netrix.ui.history.SurveyHistoryDialog
 import com.example.ui.theme.NetrixBorder
 import com.example.ui.theme.NetrixGreen
 import com.example.ui.theme.NetrixPrimary
@@ -48,6 +56,7 @@ fun ArmScreen(
     viewModel: NetrixViewModel,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
     val activeSession by viewModel.activeSession.collectAsState()
     val samples by viewModel.samples.collectAsState()
     val currentLayer by viewModel.selectedLayer.collectAsState()
@@ -58,6 +67,26 @@ fun ArmScreen(
     val vitals by viewModel.telemetryEngine.vitals.collectAsState()
 
     var showCameraView by remember { mutableStateOf(false) }
+    var showHistoryDialog by remember { mutableStateOf(false) }
+    var customFloorPlanBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
+    val floorPlanPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            try {
+                context.contentResolver.openInputStream(uri)?.use { stream ->
+                    val bmp = BitmapFactory.decodeStream(stream)
+                    if (bmp != null) {
+                        customFloorPlanBitmap = bmp
+                        Toast.makeText(context, "Floor plan loaded successfully", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            } catch (e: Exception) {
+                Toast.makeText(context, "Failed to load floor plan: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     Column(
         modifier = modifier
@@ -72,53 +101,55 @@ fun ArmScreen(
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Column {
+                Column(modifier = Modifier.weight(1f)) {
                     Text(
                         text = "AP: ${currentLink.ssid ?: "SCANNING..."}",
                         color = NetrixPrimary,
-                        fontSize = 12.sp,
+                        fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
-                        fontFamily = FontFamily.Monospace
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1
                     )
                     Text(
                         text = "BSSID: ${currentLink.bssid ?: "UNAVAILABLE"}",
                         color = NetrixTextDim,
                         fontSize = 9.sp,
-                        fontFamily = FontFamily.Monospace
+                        fontFamily = FontFamily.Monospace,
+                        maxLines = 1
                     )
                 }
 
-                Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Column(horizontalAlignment = Alignment.End) {
                         Text(
                             text = "RSSI: ${currentLink.rssi?.let { "$it dBm" } ?: "N/A"}",
                             color = if (currentLink.rssi != null && currentLink.rssi!! >= -70) NetrixGreen else NetrixYellow,
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
                         )
                         Text(
                             text = "PING: ${vitals[VitalMetric.LATENCY]?.valueString ?: "N/A"}",
                             color = NetrixText,
-                            fontSize = 10.sp,
+                            fontSize = 9.sp,
                             fontFamily = FontFamily.Monospace
                         )
                     }
 
                     Column(horizontalAlignment = Alignment.End) {
                         Text(
-                            text = "SAMPLES: ${samples.size}",
+                            text = "PTS: ${samples.size}",
                             color = NetrixPrimary,
-                            fontSize = 11.sp,
+                            fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
                         )
                         val mm = (elapsedSec / 60).toString().padStart(2, '0')
                         val ss = (elapsedSec % 60).toString().padStart(2, '0')
                         Text(
-                            text = "TIME: $mm:$ss",
+                            text = "T: $mm:$ss",
                             color = if (isRunning) NetrixGreen else NetrixTextDim,
-                            fontSize = 10.sp,
+                            fontSize = 9.sp,
                             fontFamily = FontFamily.Monospace
                         )
                     }
@@ -128,34 +159,41 @@ fun ArmScreen(
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        // 2. View Toggle Bar (Floor Plan vs Camera HUD)
+        // 2. View Toggle Bar & Action Bar (Floor Plan vs Camera HUD + Plan Import + History)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                 TerminalButton(
                     text = "FLOOR PLAN",
                     isSelected = !showCameraView,
                     onClick = { showCameraView = false },
-                    modifier = Modifier.height(34.dp)
+                    modifier = Modifier.height(32.dp)
                 )
                 TerminalButton(
-                    text = "CAMERA (AR)",
+                    text = "CAMERA HUD",
                     isSelected = showCameraView,
                     onClick = { showCameraView = true },
-                    modifier = Modifier.height(34.dp)
+                    modifier = Modifier.height(32.dp)
                 )
             }
 
-            Text(
-                text = if (isRunning) "[●] RUNNING" else "[||] PAUSED",
-                color = if (isRunning) NetrixGreen else NetrixYellow,
-                fontSize = 10.sp,
-                fontWeight = FontWeight.Bold,
-                fontFamily = FontFamily.Monospace
-            )
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                TerminalButton(
+                    text = "LOAD PLAN",
+                    onClick = { floorPlanPicker.launch("image/*") },
+                    modifier = Modifier.height(32.dp),
+                    color = NetrixSecondary
+                )
+                TerminalButton(
+                    text = "HISTORY",
+                    onClick = { showHistoryDialog = true },
+                    modifier = Modifier.height(32.dp),
+                    color = NetrixSecondary
+                )
+            }
         }
 
         Spacer(modifier = Modifier.height(6.dp))
@@ -177,7 +215,8 @@ fun ArmScreen(
                     samples = samples,
                     currentLayer = currentLayer,
                     currentPos = currentPos,
-                    scalePixelsPerMeter = activeSession?.scalePixelsPerMeter ?: 40.0f,
+                    scalePixelsPerMeter = activeSession?.scalePixelsPerMeter ?: 0.0f,
+                    customFloorPlanBitmap = customFloorPlanBitmap,
                     onTapLocation = { x, y ->
                         if (isRunning) {
                             viewModel.addCheckpoint(x, y)
@@ -185,6 +224,30 @@ fun ArmScreen(
                     },
                     modifier = Modifier.fillMaxSize()
                 )
+
+                // Position Status Indicator Banner
+                if (isRunning) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(8.dp)
+                            .background(NetrixSurface.copy(alpha = 0.88f))
+                            .border(1.dp, if (currentPos == null) NetrixYellow else NetrixGreen)
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                    ) {
+                        Text(
+                            text = if (currentPos == null) {
+                                "[!] POSITION UNCERTAIN: TAP CANVAS TO PLACE CHECKPOINT"
+                            } else {
+                                "[✓] LAST CHECKPOINT: (${currentPos!!.first.toInt()}, ${currentPos!!.second.toInt()})"
+                            },
+                            color = if (currentPos == null) NetrixYellow else NetrixGreen,
+                            fontSize = 8.sp,
+                            fontFamily = FontFamily.Monospace,
+                            fontWeight = FontWeight.Bold
+                        )
+                    }
+                }
             }
         }
 
@@ -202,7 +265,7 @@ fun ArmScreen(
                     text = layer.displayName,
                     isSelected = currentLayer == layer,
                     onClick = { viewModel.setLayer(layer) },
-                    modifier = Modifier.height(32.dp)
+                    modifier = Modifier.height(30.dp)
                 )
             }
         }
@@ -242,9 +305,14 @@ fun ArmScreen(
                 }
 
                 TerminalButton(
-                    text = "[★] PIN CHECKPOINT",
+                    text = "[★] PIN POINT",
                     onClick = {
-                        currentPos?.let { (x, y) -> viewModel.addCheckpoint(x, y) }
+                        val pos = currentPos
+                        if (pos != null) {
+                            viewModel.addCheckpoint(pos.first, pos.second)
+                        } else {
+                            Toast.makeText(context, "Tap on floor plan canvas to place checkpoint", Toast.LENGTH_SHORT).show()
+                        }
                     },
                     modifier = Modifier.weight(1f),
                     color = NetrixPrimary,
@@ -260,5 +328,12 @@ fun ArmScreen(
                 )
             }
         }
+    }
+
+    if (showHistoryDialog) {
+        SurveyHistoryDialog(
+            viewModel = viewModel,
+            onDismiss = { showHistoryDialog = false }
+        )
     }
 }

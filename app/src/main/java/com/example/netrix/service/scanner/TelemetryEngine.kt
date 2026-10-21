@@ -68,7 +68,11 @@ class TelemetryEngine(
         scanJob?.cancel()
         scanJob = scope.launch(Dispatchers.Default) {
             while (isActive && _scannerState.value == ScannerState.ACTIVE_FOREGROUND) {
-                collectTelemetryTick()
+                try {
+                    collectTelemetryTick()
+                } catch (t: Throwable) {
+                    android.util.Log.e("TelemetryEngine", "Passive telemetry tick error: ${t.message}", t)
+                }
                 delay(activeScanIntervalMs)
             }
         }
@@ -86,21 +90,29 @@ class TelemetryEngine(
 
     private suspend fun collectTelemetryTick() {
         val now = System.currentTimeMillis()
-        val hasFineLocation = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
+        val hasFineLocation = try {
+            ContextCompat.checkSelfPermission(
+                context, Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+        } catch (_: Throwable) {
+            false
+        }
 
         // 1. Check Connectivity & Link Properties
-        val activeNetwork = connectivityManager?.activeNetwork
-        val capabilities = activeNetwork?.let { connectivityManager.getNetworkCapabilities(it) }
-        val linkProperties: LinkProperties? = activeNetwork?.let { connectivityManager.getLinkProperties(it) }
+        val activeNetwork = try { connectivityManager?.activeNetwork } catch (_: Throwable) { null }
+        val capabilities = try { activeNetwork?.let { connectivityManager?.getNetworkCapabilities(it) } } catch (_: Throwable) { null }
+        val linkProperties: LinkProperties? = try { activeNetwork?.let { connectivityManager?.getLinkProperties(it) } } catch (_: Throwable) { null }
         val isWifi = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
 
         // 2. Wi-Fi Info from WifiManager or NetworkCapabilities
-        val wifiInfo: WifiInfo? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            capabilities?.transportInfo as? WifiInfo ?: @Suppress("DEPRECATION") wifiManager?.connectionInfo
-        } else {
-            @Suppress("DEPRECATION") wifiManager?.connectionInfo
+        val wifiInfo: WifiInfo? = try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                capabilities?.transportInfo as? WifiInfo ?: @Suppress("DEPRECATION") wifiManager?.connectionInfo
+            } else {
+                @Suppress("DEPRECATION") wifiManager?.connectionInfo
+            }
+        } catch (_: Throwable) {
+            null
         }
 
         // Detect SSID & BSSID with permission status
@@ -459,7 +471,11 @@ class TelemetryEngine(
             publicIp = null,
             rawVitalsJson = records.entries.joinToString(";") { "${it.key.code}=${it.value.valueString}" }
         )
-        dao.insertObservation(observation)
+        try {
+            dao.insertObservation(observation)
+        } catch (t: Throwable) {
+            android.util.Log.e("TelemetryEngine", "Failed to persist observation safely: ${t.message}")
+        }
     }
 
     private fun LinkProperties.dhcpServerFromProperties(): java.net.InetAddress? {

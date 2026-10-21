@@ -124,4 +124,32 @@ class NetrixTelemetryCalculationsTest {
         // Verify line contains empty fields for missing x, y, latency without replacing with 0
         assertTrue(csv.contains(",,POSITION_UNCERTAIN,0.0,-68,,,TestNet,00:11:22:33:44:55,5180,false,true"))
     }
+
+    @Test
+    fun testZeroFakeDataSpatialHeatmapNeverExtrapolatesUnmeasuredSpace() {
+        // Samples with null/uncertain positions must not produce heatmap cells
+        val uncertainSamples = listOf(
+            SpatialSampleEntity(
+                sessionId = "s1",
+                x = null,
+                y = null,
+                positioningMethod = "POSITION_UNCERTAIN",
+                positioningConfidence = 0.0f,
+                rssi = -60,
+                latencyMs = 20,
+                packetLossRate = 0f,
+                bssid = "00:11:22:33:44:55",
+                ssid = "Net",
+                frequencyMhz = 5180,
+                isUncertain = true
+            )
+        )
+        val cells = SpatialSurveyEngine.computeHeatmapGrid(
+            samples = uncertainSamples,
+            gridWidth = 400,
+            gridHeight = 400,
+            cellSize = 20
+        )
+        assertTrue("Heatmap cells must be empty when no spatially located samples exist", cells.isEmpty())
+    }
 }

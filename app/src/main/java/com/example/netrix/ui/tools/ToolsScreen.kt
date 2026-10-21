@@ -9,7 +9,6 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -24,6 +23,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -36,10 +38,11 @@ import com.example.netrix.ui.NetrixViewModel
 import com.example.netrix.ui.components.StatusIndicatorDot
 import com.example.netrix.ui.components.TerminalButton
 import com.example.netrix.ui.components.TerminalCard
-import com.example.ui.theme.NetrixBorder
+import com.example.netrix.ui.history.SurveyHistoryDialog
 import com.example.ui.theme.NetrixGreen
 import com.example.ui.theme.NetrixPrimary
 import com.example.ui.theme.NetrixRed
+import com.example.ui.theme.NetrixSecondary
 import com.example.ui.theme.NetrixText
 import com.example.ui.theme.NetrixTextDim
 import com.example.ui.theme.NetrixVoid
@@ -52,6 +55,7 @@ fun ToolsScreen(
     val context = LocalContext.current
     val allSessions by viewModel.allSessions.collectAsState()
     val observations by viewModel.recentObservations.collectAsState()
+    var showHistoryDialog by remember { mutableStateOf(false) }
 
     val permissionLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -72,19 +76,19 @@ fun ToolsScreen(
             .background(NetrixVoid)
             .verticalScroll(rememberScrollState())
             .padding(8.dp),
-        verticalArrangement = Arrangement.spacedBy(10.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Text(
-            text = "NETRIX SYSTEM TOOLS & SETTINGS",
+            text = "SYSTEM TOOLS & SETTINGS",
             color = NetrixPrimary,
-            fontSize = 13.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Bold,
             fontFamily = FontFamily.Monospace
         )
 
         // 1. Android Permission Status
         TerminalCard(title = "Hardware & Platform Permissions") {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 permissionsList.forEach { (perm, desc) ->
                     val isGranted = ContextCompat.checkSelfPermission(context, perm) == PackageManager.PERMISSION_GRANTED
                     Row(
@@ -95,19 +99,19 @@ fun ToolsScreen(
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             StatusIndicatorDot(isActive = isGranted)
                             Spacer(modifier = Modifier.padding(3.dp))
-                            Text(desc, color = NetrixText, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
+                            Text(desc, color = NetrixText, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
                         }
                         Text(
                             text = if (isGranted) "GRANTED" else "DENIED",
                             color = if (isGranted) NetrixGreen else NetrixRed,
-                            fontSize = 10.sp,
+                            fontSize = 9.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
                         )
                     }
                 }
 
-                Spacer(modifier = Modifier.height(4.dp))
+                Spacer(modifier = Modifier.height(2.dp))
                 TerminalButton(
                     text = "[REQUEST ALL PERMISSIONS]",
                     onClick = {
@@ -128,9 +132,9 @@ fun ToolsScreen(
         // 2. Local Database & Survey History
         TerminalCard(title = "Local Storage (Room SQLite)") {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Stored Survey Sessions: ${allSessions.size}", color = NetrixText, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                Text("Persisted Observations: ${observations.size}", color = NetrixText, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                Text("Database Engine: Room 2.7.0 Local-First", color = NetrixTextDim, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                Text("Survey Sessions: ${allSessions.size}", color = NetrixText, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                Text("Persisted Observations: ${observations.size}", color = NetrixText, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                Text("Storage Mode: Local-First Relational (Room 2.7.0)", color = NetrixTextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
 
                 Spacer(modifier = Modifier.height(4.dp))
                 Row(
@@ -138,17 +142,13 @@ fun ToolsScreen(
                     horizontalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
                     TerminalButton(
-                        text = "EXPORT SURVEY CSV",
-                        onClick = {
-                            val csv = viewModel.exportCurrentSurveyCsv()
-                            val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                            clipboard.setPrimaryClip(ClipData.newPlainText("SURVEY_CSV", csv))
-                            Toast.makeText(context, "Survey CSV copied to clipboard", Toast.LENGTH_SHORT).show()
-                        },
-                        modifier = Modifier.weight(1f)
+                        text = "VIEW SESSIONS (${allSessions.size})",
+                        onClick = { showHistoryDialog = true },
+                        modifier = Modifier.weight(1f),
+                        color = NetrixSecondary
                     )
                     TerminalButton(
-                        text = "EXPORT OBSERVATIONS",
+                        text = "EXPORT CSV",
                         onClick = {
                             val csv = viewModel.exportAllObservationsCsv()
                             val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
@@ -162,22 +162,29 @@ fun ToolsScreen(
         }
 
         // 3. Survey Calibration & Thresholds
-        TerminalCard(title = "Survey & RF Thresholds") {
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text("Dead-Zone RSSI Threshold: < -80 dBm (Standard)", color = NetrixText, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                Text("Floor Plan Scale: 40.0 px/m (Default 5m calibration)", color = NetrixText, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                Text("Heatmap Engine: Inverse Distance Weighting (IDW)", color = NetrixTextDim, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                Text("Extrapolation Policy: Unmeasured cells remain masked", color = NetrixGreen, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+        TerminalCard(title = "Survey Calibration & RF Thresholds") {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text("Dead-Zone RSSI Threshold: < -80 dBm (Standard)", color = NetrixText, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                Text("Floor Plan Scale: 40.0 px/m (Default 5m calibration)", color = NetrixText, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                Text("Interpolation: Inverse Distance Weighting (IDW)", color = NetrixTextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                Text("Extrapolation Policy: Unmeasured cells remain masked", color = NetrixGreen, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
             }
         }
 
-        // 4. About & Policy Compliance
+        // 4. About & Integrity Policy
         TerminalCard(title = "About NETRIX") {
-            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text("NETRIX v1.0 — Network Intelligence Terminal", color = NetrixPrimary, fontWeight = FontWeight.Bold, fontSize = 11.sp, fontFamily = FontFamily.Monospace)
-                Text("Architecture: 2 Core Engines (ARM + Scanner)", color = NetrixText, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
-                Text("Truthfulness Policy: Zero fake data, real measurements only.", color = NetrixTextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text("NETRIX v1.0 — Network Intelligence Terminal", color = NetrixPrimary, fontWeight = FontWeight.Bold, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                Text("Architecture: 2 Core Engines (ARM + Scanner)", color = NetrixText, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                Text("Truthfulness Policy: Zero fake data, real measurements only.", color = NetrixTextDim, fontSize = 8.sp, fontFamily = FontFamily.Monospace)
             }
         }
+    }
+
+    if (showHistoryDialog) {
+        SurveyHistoryDialog(
+            viewModel = viewModel,
+            onDismiss = { showHistoryDialog = false }
+        )
     }
 }

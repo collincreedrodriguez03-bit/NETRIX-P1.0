@@ -25,6 +25,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.isActive
@@ -69,7 +70,7 @@ class NetrixViewModel(application: Application) : AndroidViewModel(application) 
     private val _surveyElapsedSec = MutableStateFlow(0L)
     val surveyElapsedSec: StateFlow<Long> = _surveyElapsedSec.asStateFlow()
 
-    private val _currentPosition = MutableStateFlow<Pair<Float, Float>?>(Pair(240f, 320f))
+    private val _currentPosition = MutableStateFlow<Pair<Float, Float>?>(null)
     val currentPosition: StateFlow<Pair<Float, Float>?> = _currentPosition.asStateFlow()
 
     private val _calibrationDistanceM = MutableStateFlow(5.0f)
@@ -84,22 +85,38 @@ class NetrixViewModel(application: Application) : AndroidViewModel(application) 
 
     // Historical Sessions Flow
     val allSessions: StateFlow<List<SurveySessionEntity>> = dao.getAllSessions()
+        .catch { e ->
+            android.util.Log.e("NetrixViewModel", "Error streaming survey sessions: ${e.message}")
+            emit(emptyList())
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Recent Observations
     val recentObservations: StateFlow<List<NetworkObservationEntity>> = dao.getRecentObservations()
+        .catch { e ->
+            android.util.Log.e("NetrixViewModel", "Error streaming recent observations: ${e.message}")
+            emit(emptyList())
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     // Recent Probes
     val recentProbeResults: StateFlow<List<ActiveProbeResultEntity>> = dao.getRecentProbeResults()
+        .catch { e ->
+            android.util.Log.e("NetrixViewModel", "Error streaming probe results: ${e.message}")
+            emit(emptyList())
+        }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     private var timerJob: Job? = null
     private var sampleJob: Job? = null
 
     init {
-        // Start foreground passive telemetry scanning
-        telemetryEngine.startScanning(intervalMs = 2500L)
+        try {
+            // Start foreground passive telemetry scanning safely
+            telemetryEngine.startScanning(intervalMs = 2500L)
+        } catch (t: Throwable) {
+            android.util.Log.e("NetrixViewModel", "Non-fatal error starting passive scanner: ${t.message}", t)
+        }
     }
 
     fun selectTab(tab: NavigationTab) {
@@ -116,18 +133,23 @@ class NetrixViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     // Survey Lifecycle Methods
-    fun startNewSurvey(name: String = "Interior Survey #${System.currentTimeMillis() % 1000}") {
+    fun startNewSurvey(
+        name: String = "Survey #${System.currentTimeMillis() % 1000}",
+        floorPlanUri: String? = null,
+        scalePxPerMeter: Float = 0.0f
+    ) {
         viewModelScope.launch {
             val session = SurveySessionEntity(
                 name = name,
-                floorPlanAssetUri = "floor_plan_default.jpg",
-                scalePixelsPerMeter = 40.0f,
+                floorPlanAssetUri = floorPlanUri ?: "blueprint_grid",
+                scalePixelsPerMeter = scalePxPerMeter,
                 startTime = System.currentTimeMillis(),
                 status = "ACTIVE"
             )
             dao.insertSession(session)
             _activeSession.value = session
             _samples.value = emptyList()
+            _currentPosition.value = null
             _surveyRunning.value = true
             _surveyElapsedSec.value = 0L
             telemetryEngine.setActiveSession(session.id)
@@ -211,23 +233,23 @@ class NetrixViewModel(application: Application) : AndroidViewModel(application) 
             }
         }
 
-        // Automatic spatial sampling every 3 seconds
+        // Automatic passive telemetry collection every 3 seconds
+        // Zero-fake-data policy: Do not invent indoor tracking between checkpoints.
+        // Save telemetry with null coordinates and mark position uncertain.
         sampleJob?.cancel()
         sampleJob = viewModelScope.launch {
             while (isActive && _surveyRunning.value) {
                 delay(3000L)
-                val pos = _currentPosition.value
                 val link = telemetryEngine.currentLink.value
                 val vitals = telemetryEngine.vitals.value
 
-                // If position is uncertain, record with null coordinates per truthfulness rules
                 val sample = SpatialSampleEntity(
                     sessionId = sessionId,
                     timestamp = System.currentTimeMillis(),
-                    x = pos?.first,
-                    y = pos?.second,
-                    positioningMethod = if (pos != null) "FLOOR_PLAN_CALIBRATED" else "POSITION_UNCERTAIN",
-                    positioningConfidence = if (pos != null) 0.85f else 0.0f,
+                    x = null,
+                    y = null,
+                    positioningMethod = "POSITION_UNCERTAIN",
+                    positioningConfidence = 0.0f,
                     rssi = link.rssi,
                     latencyMs = vitals[VitalMetric.LATENCY]?.numericValue?.toLong(),
                     packetLossRate = vitals[VitalMetric.PACKET_LOSS]?.numericValue?.toFloat(),
@@ -235,7 +257,7 @@ class NetrixViewModel(application: Application) : AndroidViewModel(application) 
                     ssid = link.ssid,
                     frequencyMhz = link.frequencyMhz,
                     isCheckpoint = false,
-                    isUncertain = pos == null
+                    isUncertain = true
                 )
                 dao.insertSample(sample)
                 _samples.value = _samples.value + sample

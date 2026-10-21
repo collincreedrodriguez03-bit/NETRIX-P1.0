@@ -43,7 +43,15 @@ object SpatialSurveyEngine {
         maxInfluenceRadiusPx: Float = 120.0f,
         deadZoneThresholdDbm: Int = -80
     ): List<HeatmapCell> {
-        val validSamples = samples.filter { it.x != null && it.y != null && !it.isUncertain }
+        // Filter samples: Must have valid coordinates, not uncertain, and possess the requested layer metric.
+        val validSamples = samples.filter { sample ->
+            sample.x != null && sample.y != null && !sample.isUncertain && when (layer) {
+                HeatmapLayer.HEATMAP_RSSI, HeatmapLayer.DEAD_ZONES -> sample.rssi != null
+                HeatmapLayer.HEATMAP_LATENCY -> sample.latencyMs != null
+                HeatmapLayer.HEATMAP_LOSS -> sample.packetLossRate != null
+                HeatmapLayer.MEASUREMENT_POINTS -> true
+            }
+        }
         if (validSamples.isEmpty()) return emptyList()
 
         val cells = mutableListOf<HeatmapCell>()
@@ -70,10 +78,10 @@ object SpatialSurveyEngine {
                     if (dist <= maxInfluenceRadiusPx) {
                         val weight = 1.0 / (dist + 5.0).pow(2.0)
                         val sampleValue = when (layer) {
-                            HeatmapLayer.HEATMAP_RSSI -> (sample.rssi ?: -90).toDouble()
-                            HeatmapLayer.HEATMAP_LATENCY -> (sample.latencyMs ?: 50L).toDouble()
-                            HeatmapLayer.HEATMAP_LOSS -> (sample.packetLossRate ?: 0f).toDouble()
-                            HeatmapLayer.DEAD_ZONES -> (sample.rssi ?: -90).toDouble()
+                            HeatmapLayer.HEATMAP_RSSI -> sample.rssi!!.toDouble()
+                            HeatmapLayer.HEATMAP_LATENCY -> sample.latencyMs!!.toDouble()
+                            HeatmapLayer.HEATMAP_LOSS -> sample.packetLossRate!!.toDouble()
+                            HeatmapLayer.DEAD_ZONES -> sample.rssi!!.toDouble()
                             HeatmapLayer.MEASUREMENT_POINTS -> 0.0
                         }
                         weightedSum += weight * sampleValue
@@ -111,7 +119,7 @@ object SpatialSurveyEngine {
         samples: List<SpatialSampleEntity>,
         deadZoneThresholdDbm: Int = -80
     ): Pair<Int, Float> {
-        val validSamples = samples.filter { it.x != null && it.y != null }
+        val validSamples = samples.filter { it.x != null && it.y != null && !it.isUncertain && it.rssi != null }
         if (validSamples.isEmpty()) return Pair(0, 0f)
 
         val deadZones = validSamples.count {

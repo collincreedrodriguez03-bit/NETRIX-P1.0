@@ -18,4 +18,9 @@ class ExampleRobolectricTest {
     val appName = context.getString(R.string.app_name)
     assertEquals("NETRIX", appName)
   }
+
+  @Test
+  fun `test main activity launch`() {
+    org.robolectric.Robolectric.buildActivity(MainActivity::class.java).setup()
+  }
 }

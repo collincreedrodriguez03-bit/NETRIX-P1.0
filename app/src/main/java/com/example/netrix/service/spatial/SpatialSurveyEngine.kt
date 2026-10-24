@@ -68,8 +68,8 @@ object SpatialSurveyEngine {
                 var minDistance = Float.MAX_VALUE
 
                 for (sample in validSamples) {
-                    val sx = sample.x!!
-                    val sy = sample.y!!
+                    val sx = sample.x ?: continue
+                    val sy = sample.y ?: continue
                     val dist = hypot(cellX - sx, cellY - sy)
                     if (dist < minDistance) {
                         minDistance = dist
@@ -78,10 +78,10 @@ object SpatialSurveyEngine {
                     if (dist <= maxInfluenceRadiusPx) {
                         val weight = 1.0 / (dist + 5.0).pow(2.0)
                         val sampleValue = when (layer) {
-                            HeatmapLayer.HEATMAP_RSSI -> sample.rssi!!.toDouble()
-                            HeatmapLayer.HEATMAP_LATENCY -> sample.latencyMs!!.toDouble()
-                            HeatmapLayer.HEATMAP_LOSS -> sample.packetLossRate!!.toDouble()
-                            HeatmapLayer.DEAD_ZONES -> sample.rssi!!.toDouble()
+                            HeatmapLayer.HEATMAP_RSSI -> sample.rssi?.toDouble() ?: continue
+                            HeatmapLayer.HEATMAP_LATENCY -> sample.latencyMs?.toDouble() ?: continue
+                            HeatmapLayer.HEATMAP_LOSS -> sample.packetLossRate?.toDouble() ?: continue
+                            HeatmapLayer.DEAD_ZONES -> sample.rssi?.toDouble() ?: continue
                             HeatmapLayer.MEASUREMENT_POINTS -> 0.0
                         }
                         weightedSum += weight * sampleValue

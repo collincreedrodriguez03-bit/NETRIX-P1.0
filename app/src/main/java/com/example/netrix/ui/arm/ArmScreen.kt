@@ -1,8 +1,10 @@
 package com.example.netrix.ui.arm
 
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -20,6 +22,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
@@ -35,6 +38,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.netrix.model.HeatmapLayer
+import com.example.netrix.model.SignalRatingBand
 import com.example.netrix.model.VitalMetric
 import com.example.netrix.ui.NetrixViewModel
 import com.example.netrix.ui.components.TerminalButton
@@ -64,11 +68,14 @@ fun ArmScreen(
     val elapsedSec by viewModel.surveyElapsedSec.collectAsState()
     val currentPos by viewModel.currentPosition.collectAsState()
     val currentLink by viewModel.telemetryEngine.currentLink.collectAsState()
+    val discoveredAps by viewModel.telemetryEngine.discoveredAps.collectAsState()
     val vitals by viewModel.telemetryEngine.vitals.collectAsState()
 
     var showCameraView by remember { mutableStateOf(false) }
     var showHistoryDialog by remember { mutableStateOf(false) }
     var customFloorPlanBitmap by remember { mutableStateOf<Bitmap?>(null) }
+    var selectedApBssid by remember { mutableStateOf<String?>(null) }
+    var surveyPreconditionError by remember { mutableStateOf<String?>(null) }
 
     val floorPlanPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -103,7 +110,7 @@ fun ArmScreen(
             ) {
                 Column(modifier = Modifier.weight(1f)) {
                     Text(
-                        text = "AP: ${currentLink.ssid ?: "SCANNING..."}",
+                        text = "AP: ${currentLink.ssid ?: (currentLink.unavailableReason ?: "SCANNING...")}",
                         color = NetrixPrimary,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
@@ -111,7 +118,7 @@ fun ArmScreen(
                         maxLines = 1
                     )
                     Text(
-                        text = "BSSID: ${currentLink.bssid ?: "UNAVAILABLE"}",
+                        text = "BSSID: ${currentLink.bssid ?: (currentLink.unavailableReason ?: "UNAVAILABLE")}",
                         color = NetrixTextDim,
                         fontSize = 9.sp,
                         fontFamily = FontFamily.Monospace,
@@ -121,9 +128,10 @@ fun ArmScreen(
 
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Column(horizontalAlignment = Alignment.End) {
+                        val rssiColor = SignalRatingBand.colorForRssi(currentLink.rssi)
                         Text(
                             text = "RSSI: ${currentLink.rssi?.let { "$it dBm" } ?: "N/A"}",
-                            color = if (currentLink.rssi != null && currentLink.rssi!! >= -70) NetrixGreen else NetrixYellow,
+                            color = rssiColor,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
@@ -222,26 +230,30 @@ fun ArmScreen(
                             viewModel.addCheckpoint(x, y)
                         }
                     },
+                    onTapApMarker = { tappedBssid ->
+                        selectedApBssid = tappedBssid
+                    },
                     modifier = Modifier.fillMaxSize()
                 )
 
                 // Position Status Indicator Banner
                 if (isRunning) {
+                    val pos = currentPos
                     Box(
                         modifier = Modifier
                             .align(Alignment.BottomStart)
                             .padding(8.dp)
                             .background(NetrixSurface.copy(alpha = 0.88f))
-                            .border(1.dp, if (currentPos == null) NetrixYellow else NetrixGreen)
+                            .border(1.dp, if (pos == null) NetrixYellow else NetrixGreen)
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = if (currentPos == null) {
+                            text = if (pos == null) {
                                 "[!] POSITION UNCERTAIN: TAP CANVAS TO PLACE CHECKPOINT"
                             } else {
-                                "[✓] LAST CHECKPOINT: (${currentPos!!.first.toInt()}, ${currentPos!!.second.toInt()})"
+                                "[✓] LAST CHECKPOINT: (${pos.first.toInt()}, ${pos.second.toInt()})"
                             },
-                            color = if (currentPos == null) NetrixYellow else NetrixGreen,
+                            color = if (pos == null) NetrixYellow else NetrixGreen,
                             fontSize = 8.sp,
                             fontFamily = FontFamily.Monospace,
                             fontWeight = FontWeight.Bold
@@ -272,7 +284,7 @@ fun ArmScreen(
 
         Spacer(modifier = Modifier.height(6.dp))
 
-        // 5. Bottom Survey Controller Controls
+        // 5. Bottom Survey Controller Controls (Requirement 1: Verify preconditions safely before starting)
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(6.dp)
@@ -280,7 +292,14 @@ fun ArmScreen(
             if (activeSession == null) {
                 TerminalButton(
                     text = "[>] START SURVEY",
-                    onClick = { viewModel.startNewSurvey() },
+                    onClick = {
+                        val (ready, reason) = viewModel.verifySurveyPreconditions(context)
+                        if (!ready) {
+                            surveyPreconditionError = reason
+                        } else {
+                            viewModel.startNewSurvey()
+                        }
+                    },
                     modifier = Modifier.weight(1f),
                     color = NetrixGreen,
                     textColor = NetrixGreen
@@ -297,7 +316,14 @@ fun ArmScreen(
                 } else {
                     TerminalButton(
                         text = "[>] RESUME",
-                        onClick = { viewModel.resumeSurvey() },
+                        onClick = {
+                            val (ready, reason) = viewModel.verifySurveyPreconditions(context)
+                            if (!ready) {
+                                surveyPreconditionError = reason
+                            } else {
+                                viewModel.resumeSurvey()
+                            }
+                        },
                         modifier = Modifier.weight(1f),
                         color = NetrixGreen,
                         textColor = NetrixGreen
@@ -328,6 +354,81 @@ fun ArmScreen(
                 )
             }
         }
+    }
+
+    // Survey Preconditions Failure Alert Dialog
+    if (surveyPreconditionError != null) {
+        val errorText = surveyPreconditionError ?: ""
+        val isLocationOff = errorText.contains("Location", ignoreCase = true) && errorText.contains("OFF", ignoreCase = true)
+
+        AlertDialog(
+            onDismissRequest = { surveyPreconditionError = null },
+            title = {
+                Text(
+                    text = "[!] SURVEY INITIALIZATION BLOCKED",
+                    color = NetrixRed,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = errorText,
+                        color = NetrixText,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Text(
+                        text = "All spatial and RF prerequisites must be verified prior to starting an active survey.",
+                        color = NetrixTextDim,
+                        fontSize = 8.5.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                }
+            },
+            confirmButton = {
+                if (isLocationOff) {
+                    TerminalButton(
+                        text = "[OPEN LOCATION SETTINGS]",
+                        onClick = {
+                            surveyPreconditionError = null
+                            try {
+                                context.startActivity(Intent(Settings.ACTION_LOCATION_SOURCE_SETTINGS))
+                            } catch (_: Throwable) {}
+                        }
+                    )
+                } else {
+                    TerminalButton(
+                        text = "[OK]",
+                        onClick = { surveyPreconditionError = null }
+                    )
+                }
+            },
+            dismissButton = {
+                if (isLocationOff) {
+                    TerminalButton(
+                        text = "[DISMISS]",
+                        onClick = { surveyPreconditionError = null }
+                    )
+                }
+            },
+            containerColor = NetrixVoid,
+            modifier = Modifier.border(1.dp, NetrixBorder)
+        )
+    }
+
+    // Requirement 6: Map AP Pings Telemetry Bottom Sheet
+    if (selectedApBssid != null) {
+        ApTelemetryBottomSheet(
+            bssid = selectedApBssid!!,
+            samples = samples,
+            discoveredAps = discoveredAps,
+            currentLink = currentLink,
+            beepService = viewModel.telemetryEngine.proximityBeepService,
+            onDismiss = { selectedApBssid = null }
+        )
     }
 
     if (showHistoryDialog) {

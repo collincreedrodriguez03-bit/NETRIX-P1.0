@@ -92,11 +92,34 @@ data class WifiLinkSnapshot(
     val ssid: String? = null,
     val bssid: String? = null,
     val rssi: Int? = null,
+    val smoothedRssi: Float? = null,
     val frequencyMhz: Int? = null,
     val linkSpeedMbps: Int? = null,
+    val channel: Int? = null,
+    val band: String? = null,
+    val channelWidthMhz: Int? = null,
+    val security: String? = null,
     val isConnected: Boolean = false,
     val status: MetricStatus = MetricStatus.UNAVAILABLE,
+    val unavailableReason: String? = null,
     val timestamp: Long = System.currentTimeMillis()
+)
+
+/**
+ * Discovered Wi-Fi Access Point from hardware scan results.
+ */
+data class DiscoveredAccessPoint(
+    val ssid: String,
+    val bssid: String,
+    val rssi: Int,
+    val frequencyMhz: Int,
+    val channel: Int?,
+    val band: String,
+    val channelWidthMhz: Int,
+    val capabilities: String,
+    val timestampUs: Long,
+    val ageSeconds: Long,
+    val isConnected: Boolean = false
 )
 
 /**

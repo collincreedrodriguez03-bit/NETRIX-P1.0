@@ -1,6 +1,10 @@
 package com.example
 
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
@@ -28,18 +32,26 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.netrix.model.SignalRatingBand
 import com.example.netrix.ui.NavigationTab
 import com.example.netrix.ui.NetrixViewModel
 import com.example.netrix.ui.arm.ArmScreen
@@ -51,12 +63,14 @@ import com.example.netrix.ui.tools.ToolsScreen
 import com.example.ui.theme.NetrixBorder
 import com.example.ui.theme.NetrixGreen
 import com.example.ui.theme.NetrixPrimary
+import com.example.ui.theme.NetrixRed
 import com.example.ui.theme.NetrixSecondary
 import com.example.ui.theme.NetrixSurface
 import com.example.ui.theme.NetrixText
 import com.example.ui.theme.NetrixTextDim
 import com.example.ui.theme.NetrixTheme
 import com.example.ui.theme.NetrixVoid
+import java.io.File
 
 class MainActivity : ComponentActivity() {
 
@@ -75,14 +89,41 @@ class MainActivity : ComponentActivity() {
             android.util.Log.e("MainActivity", "Error during MainActivity startup: ${t.message}", t)
         }
     }
+
+    override fun onPause() {
+        super.onPause()
+        viewModel.telemetryEngine.proximityBeepService.onPause()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.telemetryEngine.proximityBeepService.onResume()
+    }
+
+    override fun onStop() {
+        super.onStop()
+        viewModel.telemetryEngine.proximityBeepService.release()
+    }
 }
 
 @Composable
 fun MainTerminalApp(viewModel: NetrixViewModel) {
+    val context = LocalContext.current
     val currentTab by viewModel.currentTab.collectAsState()
     val isDrawerOpen by viewModel.isDrawerOpen.collectAsState()
     val samples by viewModel.samples.collectAsState()
     val link by viewModel.telemetryEngine.currentLink.collectAsState()
+
+    // Requirement 0: Check for last_crash.txt on startup
+    var crashLogText by remember {
+        mutableStateOf(
+            File(context.filesDir, "last_crash.txt").let { file ->
+                if (file.exists()) {
+                    try { file.readText() } catch (_: Throwable) { null }
+                } else null
+            }
+        )
+    }
 
     BackHandler(enabled = isDrawerOpen || currentTab != NavigationTab.ARM_HOME) {
         if (isDrawerOpen) {
@@ -147,9 +188,10 @@ fun MainTerminalApp(viewModel: NetrixViewModel) {
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         StatusIndicatorDot(isActive = link.isConnected)
+                        val bandColor = SignalRatingBand.colorForRssi(link.rssi)
                         Text(
-                            text = link.rssi?.let { "$it dBm" } ?: "OFFLINE",
-                            color = if (link.isConnected) NetrixGreen else NetrixTextDim,
+                            text = link.rssi?.let { "$it dBm" } ?: (link.unavailableReason ?: "OFFLINE"),
+                            color = if (link.isConnected) bandColor else NetrixTextDim,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
@@ -202,6 +244,72 @@ fun MainTerminalApp(viewModel: NetrixViewModel) {
                 )
             }
         }
+    }
+
+    // Requirement 0: Crash Logger Dialog on Startup if last_crash.txt exists
+    if (crashLogText != null) {
+        val stackTrace = crashLogText ?: ""
+        AlertDialog(
+            onDismissRequest = {},
+            title = {
+                Text(
+                    text = "[!] UNCAUGHT CRASH REPORT",
+                    color = NetrixRed,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFamily = FontFamily.Monospace
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text(
+                        text = "A crash occurred during previous execution. The stack trace was captured to last_crash.txt:",
+                        color = NetrixTextDim,
+                        fontSize = 9.sp,
+                        fontFamily = FontFamily.Monospace
+                    )
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(180.dp)
+                            .background(NetrixSurface)
+                            .border(1.dp, NetrixBorder)
+                            .padding(6.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        Text(
+                            text = stackTrace,
+                            color = NetrixText,
+                            fontSize = 8.sp,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
+                }
+            },
+            confirmButton = {
+                TerminalButton(
+                    text = "[COPY CRASH LOG]",
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("CRASH_LOG", stackTrace))
+                        Toast.makeText(context, "Crash log copied to clipboard", Toast.LENGTH_SHORT).show()
+                    }
+                )
+            },
+            dismissButton = {
+                TerminalButton(
+                    text = "[DISMISS]",
+                    onClick = {
+                        try {
+                            File(context.filesDir, "last_crash.txt").delete()
+                        } catch (_: Throwable) {}
+                        crashLogText = null
+                    }
+                )
+            },
+            containerColor = NetrixVoid,
+            modifier = Modifier.border(1.dp, NetrixBorder)
+        )
     }
 }
 
@@ -295,7 +403,7 @@ fun TerminalNavigationDrawer(
 
             Row(verticalAlignment = Alignment.CenterVertically) {
                 StatusIndicatorDot(isActive = true)
-                Text(" Scanner: Active", color = NetrixText, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
+                Text(" Scanner: Active (2 Hz)", color = NetrixText, fontSize = 10.sp, fontFamily = FontFamily.Monospace)
             }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 StatusIndicatorDot(isActive = linkConnected)

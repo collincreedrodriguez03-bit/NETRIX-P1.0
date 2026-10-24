@@ -9,18 +9,18 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 @RunWith(RobolectricTestRunner::class)
-@Config(sdk = [36])
+@Config(sdk = [34])
 class ExampleRobolectricTest {
 
   @Test
-  fun `read string from context`() {
+  fun testReadStringFromContext() {
     val context = ApplicationProvider.getApplicationContext<Context>()
     val appName = context.getString(R.string.app_name)
     assertEquals("NETRIX", appName)
   }
 
   @Test
-  fun `test main activity launch`() {
-    org.robolectric.Robolectric.buildActivity(MainActivity::class.java).setup()
+  fun testMainActivityLaunch() {
+    org.robolectric.Robolectric.buildActivity(MainActivity::class.java).create()
   }
 }

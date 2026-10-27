@@ -160,7 +160,7 @@ class TelemetryEngine(
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 // API 31+: Request location-sensitive Wi-Fi info via FLAG_INCLUDE_LOCATION_INFO
-                networkCallback = object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
+                val cb = object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
                     override fun onAvailable(network: Network) {
                         val caps = connectivityManager.getNetworkCapabilities(network)
                         val wifiInfo = caps?.transportInfo as? WifiInfo
@@ -176,9 +176,10 @@ class TelemetryEngine(
                         handleNetworkLost()
                     }
                 }
-                connectivityManager.registerNetworkCallback(request, networkCallback!!)
+                networkCallback = cb
+                connectivityManager.registerNetworkCallback(request, cb)
             } else {
-                networkCallback = object : ConnectivityManager.NetworkCallback() {
+                val cb = object : ConnectivityManager.NetworkCallback() {
                     override fun onAvailable(network: Network) {
                         @Suppress("DEPRECATION")
                         val wifiInfo = wifiManager?.connectionInfo
@@ -195,7 +196,8 @@ class TelemetryEngine(
                         handleNetworkLost()
                     }
                 }
-                connectivityManager.registerNetworkCallback(request, networkCallback!!)
+                networkCallback = cb
+                connectivityManager.registerNetworkCallback(request, cb)
             }
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to register NetworkCallback: ${t.message}", t)

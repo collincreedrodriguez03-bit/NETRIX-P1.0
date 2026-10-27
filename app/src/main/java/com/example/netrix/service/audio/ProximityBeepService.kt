@@ -70,11 +70,15 @@ class ProximityBeepService(
 
     private fun initAudioTrack() {
         try {
-            val minBufSize = AudioTrack.getMinBufferSize(
+            val rawMin = AudioTrack.getMinBufferSize(
                 SAMPLE_RATE,
                 AudioFormat.CHANNEL_OUT_MONO,
                 AudioFormat.ENCODING_PCM_16BIT
-            ).coerceAtLeast(SAMPLE_RATE / 4)
+            )
+            // Ensure buffer size is positive and strictly frame-aligned (even number of bytes for 16-bit PCM).
+            // SAMPLE_RATE / 4 was 11025 (odd), which caused UnsupportedOperationException: Invalid audio buffer size.
+            val baseSize = if (rawMin > 0) rawMin else 4096
+            val minBufSize = ((baseSize.coerceAtLeast(4096) + 3) / 4) * 4
 
             audioTrack = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
                 AudioTrack.Builder()

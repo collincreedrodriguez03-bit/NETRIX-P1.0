@@ -503,9 +503,9 @@ fun ArmScreen(
     }
 
     // Requirement 6: Map AP Pings Telemetry Bottom Sheet
-    if (selectedApBssid != null) {
+    selectedApBssid?.let { bssid ->
         ApTelemetryBottomSheet(
-            bssid = selectedApBssid!!,
+            bssid = bssid,
             samples = samples,
             discoveredAps = discoveredAps,
             currentLink = wifiState,

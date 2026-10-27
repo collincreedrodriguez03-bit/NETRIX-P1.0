@@ -479,8 +479,7 @@ fun MetricsScreen(
     }
 
     // Detail Inspector Dialog for Metric
-    if (inspectedRecord != null) {
-        val r = inspectedRecord!!
+    inspectedRecord?.let { r ->
         AlertDialog(
             onDismissRequest = { inspectedRecord = null },
             title = {
@@ -509,8 +508,7 @@ fun MetricsScreen(
     }
 
     // Detail Inspector Dialog for AP
-    if (inspectedAp != null) {
-        val ap = inspectedAp!!
+    inspectedAp?.let { ap ->
         AlertDialog(
             onDismissRequest = { inspectedAp = null },
             title = {

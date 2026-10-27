@@ -74,7 +74,7 @@ fun MetricsScreen(
     val discoveredAps by viewModel.telemetryEngine.discoveredAps.collectAsState()
     val isScanThrottled by viewModel.telemetryEngine.isScanThrottled.collectAsState()
     val scanStatusMessage by viewModel.telemetryEngine.scanStatusMessage.collectAsState()
-    val currentLink by viewModel.telemetryEngine.currentLink.collectAsState()
+    val wifiState by viewModel.telemetryEngine.wifiState.collectAsState()
 
     var viewMode by remember { mutableStateOf(MetricsViewMode.VITALS_TABLE) }
     var searchQuery by remember { mutableStateOf("") }
@@ -82,23 +82,35 @@ fun MetricsScreen(
     var inspectedRecord by remember { mutableStateOf<MetricRecord?>(null) }
     var inspectedAp by remember { mutableStateOf<DiscoveredAccessPoint?>(null) }
 
-    val allRecords = remember(vitalsMap, currentLink) {
+    val allRecords = remember(vitalsMap, wifiState) {
         VitalMetric.entries.map { vital ->
             val record = vitalsMap[vital]
-            if (vital == VitalMetric.RSSI && currentLink.rssi != null) {
-                val smoothedStr = currentLink.smoothedRssi?.let { String.format("%.1f", it) }
+            if (vital == VitalMetric.RSSI && wifiState.rssi != null) {
+                val smoothedStr = wifiState.smoothedRssi?.let { String.format("%.1f", it) }
                 MetricRecord(
                     vital = vital,
-                    valueString = "${currentLink.rssi} dBm (raw)" + (if (smoothedStr != null) " | smooth: $smoothedStr" else ""),
-                    numericValue = currentLink.rssi?.toDouble(),
+                    valueString = "${wifiState.rssi} dBm (raw)" + (if (smoothedStr != null) " | smooth: $smoothedStr" else ""),
+                    numericValue = wifiState.rssi?.toDouble(),
                     status = MetricStatus.AVAILABLE,
                     sourceApi = "WifiInfo.rssi (500ms 2Hz loop)"
+                )
+            } else if (vital == VitalMetric.SSID) {
+                record ?: MetricRecord(
+                    vital = vital,
+                    valueString = wifiState.ssid ?: (wifiState.redactedReason ?: "hidden by Android"),
+                    status = if (wifiState.ssid != null) MetricStatus.AVAILABLE else MetricStatus.PERMISSION_REQUIRED
+                )
+            } else if (vital == VitalMetric.BSSID) {
+                record ?: MetricRecord(
+                    vital = vital,
+                    valueString = wifiState.bssid ?: (wifiState.redactedReason ?: "hidden by Android"),
+                    status = if (wifiState.bssid != null) MetricStatus.AVAILABLE else MetricStatus.PERMISSION_REQUIRED
                 )
             } else {
                 record ?: MetricRecord(
                     vital = vital,
-                    valueString = currentLink.unavailableReason ?: MetricStatus.UNAVAILABLE.label,
-                    status = if (currentLink.unavailableReason != null) MetricStatus.UNAVAILABLE else MetricStatus.NOT_TESTED
+                    valueString = MetricStatus.NOT_TESTED.label,
+                    status = MetricStatus.NOT_TESTED
                 )
             }
         }

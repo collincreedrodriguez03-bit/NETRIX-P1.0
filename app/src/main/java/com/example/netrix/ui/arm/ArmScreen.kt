@@ -8,6 +8,12 @@ import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.horizontalScroll
@@ -20,6 +26,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.material3.AlertDialog
@@ -67,9 +74,16 @@ fun ArmScreen(
     val isRunning by viewModel.surveyRunning.collectAsState()
     val elapsedSec by viewModel.surveyElapsedSec.collectAsState()
     val currentPos by viewModel.currentPosition.collectAsState()
-    val currentLink by viewModel.telemetryEngine.currentLink.collectAsState()
+    val wifiState by viewModel.telemetryEngine.wifiState.collectAsState()
     val discoveredAps by viewModel.telemetryEngine.discoveredAps.collectAsState()
     val vitals by viewModel.telemetryEngine.vitals.collectAsState()
+
+    val beepService = viewModel.telemetryEngine.proximityBeepService
+    val isBeepEnabled by beepService.isEnabled.collectAsState()
+    val beepStrength by beepService.currentStrength.collectAsState()
+    val beepTargetSsid by beepService.targetSsid.collectAsState()
+    val beepTargetBssid by beepService.targetBssid.collectAsState()
+    val beepRssi by beepService.currentRssi.collectAsState()
 
     var showCameraView by remember { mutableStateOf(false) }
     var showHistoryDialog by remember { mutableStateOf(false) }
@@ -101,7 +115,7 @@ fun ArmScreen(
             .background(NetrixVoid)
             .padding(6.dp)
     ) {
-        // 1. Live Survey Status & Telemetry HUD Ribbon
+        // 1. Live Survey Status & Telemetry HUD Ribbon (Requirement E: HUD RSSI/FREQ from WifiState)
         TerminalCard(modifier = Modifier.fillMaxWidth()) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -109,8 +123,18 @@ fun ArmScreen(
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Column(modifier = Modifier.weight(1f)) {
+                    val ssidDisplay = if (wifiState.connected) {
+                        wifiState.ssid ?: "hidden by Android"
+                    } else {
+                        "DISCONNECTED"
+                    }
+                    val bssidDisplay = if (wifiState.connected) {
+                        wifiState.bssid ?: "hidden by Android"
+                    } else {
+                        "UNAVAILABLE"
+                    }
                     Text(
-                        text = "AP: ${currentLink.ssid ?: (currentLink.unavailableReason ?: "SCANNING...")}",
+                        text = "AP: $ssidDisplay",
                         color = NetrixPrimary,
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Bold,
@@ -118,7 +142,7 @@ fun ArmScreen(
                         maxLines = 1
                     )
                     Text(
-                        text = "BSSID: ${currentLink.bssid ?: (currentLink.unavailableReason ?: "UNAVAILABLE")}",
+                        text = "BSSID: $bssidDisplay",
                         color = NetrixTextDim,
                         fontSize = 9.sp,
                         fontFamily = FontFamily.Monospace,
@@ -128,16 +152,16 @@ fun ArmScreen(
 
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                     Column(horizontalAlignment = Alignment.End) {
-                        val rssiColor = SignalRatingBand.colorForRssi(currentLink.rssi)
+                        val rssiColor = SignalRatingBand.colorForRssi(wifiState.rssi)
                         Text(
-                            text = "RSSI: ${currentLink.rssi?.let { "$it dBm" } ?: "N/A"}",
+                            text = "RSSI: ${wifiState.rssi?.let { "$it dBm" } ?: "N/A"}",
                             color = rssiColor,
                             fontSize = 10.sp,
                             fontWeight = FontWeight.Bold,
                             fontFamily = FontFamily.Monospace
                         )
                         Text(
-                            text = "PING: ${vitals[VitalMetric.LATENCY]?.valueString ?: "N/A"}",
+                            text = "FREQ: ${wifiState.freqMhz?.let { "$it MHz" } ?: "N/A"}",
                             color = NetrixText,
                             fontSize = 9.sp,
                             fontFamily = FontFamily.Monospace
@@ -163,6 +187,65 @@ fun ArmScreen(
                     }
                 }
             }
+        }
+
+        Spacer(modifier = Modifier.height(4.dp))
+
+        // Proximity Beep Controller with pulsing radar HUD
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .background(NetrixSurface)
+                .border(1.dp, if (isBeepEnabled) NetrixGreen else NetrixBorder)
+                .padding(horizontal = 8.dp, vertical = 4.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.weight(1f)
+            ) {
+                val infiniteTransition = rememberInfiniteTransition(label = "arm_beep_pulse")
+                val pulseAlpha by infiniteTransition.animateFloat(
+                    initialValue = 0.3f,
+                    targetValue = 1.0f,
+                    animationSpec = infiniteRepeatable(
+                        animation = tween(durationMillis = 400, easing = LinearEasing),
+                        repeatMode = RepeatMode.Reverse
+                    ),
+                    label = "arm_pulse"
+                )
+                Box(
+                    modifier = Modifier
+                        .size(9.dp)
+                        .background(
+                            if (isBeepEnabled) NetrixGreen.copy(alpha = pulseAlpha) else NetrixTextDim
+                        )
+                )
+                val targetName = beepTargetSsid ?: beepTargetBssid ?: (wifiState.ssid ?: "Connected AP")
+                Text(
+                    text = if (isBeepEnabled) "BEEP ACTIVE: $targetName (${beepRssi ?: wifiState.rssi ?: "?"} dBm)" else "PROXIMITY BEEP: STANDBY",
+                    color = if (isBeepEnabled) NetrixGreen else NetrixTextDim,
+                    fontSize = 8.5.sp,
+                    fontFamily = FontFamily.Monospace,
+                    fontWeight = FontWeight.Bold,
+                    maxLines = 1
+                )
+            }
+
+            TerminalButton(
+                text = if (isBeepEnabled) "[STOP BEEP]" else "[START BEEP]",
+                isSelected = isBeepEnabled,
+                onClick = {
+                    if (!isBeepEnabled && beepTargetBssid == null && wifiState.bssid != null) {
+                        beepService.setTarget(wifiState.bssid, wifiState.ssid, isConnected = true)
+                    }
+                    beepService.toggleBeep(!isBeepEnabled)
+                },
+                modifier = Modifier.height(26.dp),
+                color = if (isBeepEnabled) NetrixGreen else NetrixSecondary
+            )
         }
 
         Spacer(modifier = Modifier.height(6.dp))
@@ -215,7 +298,7 @@ fun ArmScreen(
         ) {
             if (showCameraView) {
                 CameraViewfinder(
-                    link = currentLink,
+                    link = wifiState,
                     modifier = Modifier.fillMaxSize()
                 )
             } else {
@@ -425,7 +508,7 @@ fun ArmScreen(
             bssid = selectedApBssid!!,
             samples = samples,
             discoveredAps = discoveredAps,
-            currentLink = currentLink,
+            currentLink = wifiState,
             beepService = viewModel.telemetryEngine.proximityBeepService,
             onDismiss = { selectedApBssid = null }
         )

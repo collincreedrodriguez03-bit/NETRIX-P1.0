@@ -64,8 +64,16 @@ class TelemetryEngine(
     private val _vitals = MutableStateFlow<Map<VitalMetric, MetricRecord>>(emptyMap())
     val vitals: StateFlow<Map<VitalMetric, MetricRecord>> = _vitals.asStateFlow()
 
-    private val _currentLink = MutableStateFlow(WifiLinkSnapshot())
-    val currentLink: StateFlow<WifiLinkSnapshot> = _currentLink.asStateFlow()
+    // Canonical Single Source of Truth for Wi-Fi Link Telemetry (Requirement A)
+    private val _wifiState = MutableStateFlow(com.example.netrix.model.WifiState())
+    val wifiState: StateFlow<com.example.netrix.model.WifiState> = _wifiState.asStateFlow()
+
+    // Backward-compatibility alias
+    val currentLink: StateFlow<com.example.netrix.model.WifiState> get() = wifiState
+
+    // Raw Diagnostics for Tools Screen (Requirement F)
+    private val _diagnostics = MutableStateFlow(com.example.netrix.model.WifiDiagnostics())
+    val diagnostics: StateFlow<com.example.netrix.model.WifiDiagnostics> = _diagnostics.asStateFlow()
 
     private val _discoveredAps = MutableStateFlow<List<DiscoveredAccessPoint>>(emptyList())
     val discoveredAps: StateFlow<List<DiscoveredAccessPoint>> = _discoveredAps.asStateFlow()
@@ -105,6 +113,22 @@ class TelemetryEngine(
         activeSessionId = sessionId
     }
 
+    /**
+     * Requirement B: CONNECTED FLAG
+     * connected = ConnectivityManager.getNetworkCapabilities(activeNetwork)?.hasTransport(TRANSPORT_WIFI) == true.
+     * NEVER derive from ssid, bssid, networkId, or supplicant state. Survey gate uses this.
+     */
+    fun isWifiConnected(): Boolean {
+        return try {
+            val cm = connectivityManager ?: return false
+            val activeNet = cm.activeNetwork ?: return false
+            val caps = cm.getNetworkCapabilities(activeNet) ?: return false
+            caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+        } catch (_: Throwable) {
+            false
+        }
+    }
+
     fun isLocationServicesEnabled(): Boolean {
         return try {
             if (locationManager != null) {
@@ -137,26 +161,38 @@ class TelemetryEngine(
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
                 // API 31+: Request location-sensitive Wi-Fi info via FLAG_INCLUDE_LOCATION_INFO
                 networkCallback = object : ConnectivityManager.NetworkCallback(FLAG_INCLUDE_LOCATION_INFO) {
+                    override fun onAvailable(network: Network) {
+                        val caps = connectivityManager.getNetworkCapabilities(network)
+                        val wifiInfo = caps?.transportInfo as? WifiInfo
+                        handleNetworkCallbackEvent(wifiInfo)
+                    }
+
                     override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
                         val wifiInfo = networkCapabilities.transportInfo as? WifiInfo
-                        handleFastWifiInfo(wifiInfo)
+                        handleNetworkCallbackEvent(wifiInfo)
                     }
 
                     override fun onLost(network: Network) {
-                        handleWifiLost()
+                        handleNetworkLost()
                     }
                 }
                 connectivityManager.registerNetworkCallback(request, networkCallback!!)
             } else {
                 networkCallback = object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        @Suppress("DEPRECATION")
+                        val wifiInfo = wifiManager?.connectionInfo
+                        handleNetworkCallbackEvent(wifiInfo)
+                    }
+
                     override fun onCapabilitiesChanged(network: Network, networkCapabilities: NetworkCapabilities) {
                         @Suppress("DEPRECATION")
                         val wifiInfo = wifiManager?.connectionInfo
-                        handleFastWifiInfo(wifiInfo)
+                        handleNetworkCallbackEvent(wifiInfo)
                     }
 
                     override fun onLost(network: Network) {
-                        handleWifiLost()
+                        handleNetworkLost()
                     }
                 }
                 connectivityManager.registerNetworkCallback(request, networkCallback!!)
@@ -292,96 +328,185 @@ class TelemetryEngine(
     /**
      * Re-queries the connected Wi-Fi interface every 500 ms (2 Hz).
      * Extracts the raw integer RSSI matching Android Developer options > Wi-Fi verbose logging.
+     * Works via wifiManager.connectionInfo for rssi/freq/linkSpeed without requiring location flags.
      */
     private fun pollConnectedWifiRssi() {
-        val wifiInfo = queryActiveWifiInfo()
-        handleFastWifiInfo(wifiInfo)
-    }
-
-    private fun queryActiveWifiInfo(): WifiInfo? {
-        return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val net = connectivityManager?.activeNetwork
-                val caps = connectivityManager?.getNetworkCapabilities(net)
-                (caps?.transportInfo as? WifiInfo) ?: @Suppress("DEPRECATION") wifiManager?.connectionInfo
-            } else {
-                @Suppress("DEPRECATION")
-                wifiManager?.connectionInfo
-            }
-        } catch (_: Throwable) {
-            null
-        }
-    }
-
-    private fun handleFastWifiInfo(wifiInfo: WifiInfo?) {
+        val connected = isWifiConnected()
         val hasFine = ContextCompat.checkSelfPermission(
             context, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
+        val hasNearby = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
+        } else true
         val locOn = isLocationServicesEnabled()
         _isLocationEnabled.value = locOn
 
-        val isConnected = wifiInfo != null && wifiInfo.networkId != -1 && wifiInfo.rssi != -127 && wifiInfo.rssi != -999
-
-        if (!isConnected) {
-            if (_currentLink.value.isConnected) {
-                handleWifiLost()
+        if (!connected) {
+            if (_wifiState.value.connected) {
+                handleNetworkLost()
             }
             return
         }
 
-        val rawRssi = wifiInfo!!.rssi
-        val prevEma = smoothedEmaRssi
-        val smoothed = if (prevEma == null) {
-            rawRssi.toFloat()
-        } else {
-            prevEma * 0.7f + rawRssi.toFloat() * 0.3f
-        }
-        smoothedEmaRssi = smoothed
+        @Suppress("DEPRECATION")
+        val connInfo = try { wifiManager?.connectionInfo } catch (_: Throwable) { null }
+        val rawRssi = if (connInfo != null && connInfo.rssi != -127 && connInfo.rssi != -999) connInfo.rssi else _wifiState.value.rssi
+        val freq = if (connInfo != null && connInfo.frequency > 0) connInfo.frequency else _wifiState.value.freqMhz
+        val (ch, band) = VitalCalculators.frequencyToChannel(freq)
+        val linkSpeed = if (connInfo != null && connInfo.linkSpeed > 0) connInfo.linkSpeed else _wifiState.value.linkMbps
 
-        val rawSsid = wifiInfo.ssid?.trim('"', ' ')
+        // Smoothing EMA calculation
+        if (rawRssi != null) {
+            val prevEma = smoothedEmaRssi
+            smoothedEmaRssi = if (prevEma == null) {
+                rawRssi.toFloat()
+            } else {
+                prevEma * 0.7f + rawRssi.toFloat() * 0.3f
+            }
+        }
+
+        // Try reading SSID/BSSID from connInfo if unredacted, otherwise preserve callback's unredacted values
+        val rawSsid = connInfo?.ssid?.trim('"', ' ')
         val cleanSsid = when {
             rawSsid.isNullOrBlank() || rawSsid == "<unknown ssid>" -> null
             else -> rawSsid
         }
-
-        val rawBssid = wifiInfo.bssid
+        val rawBssid = connInfo?.bssid
         val cleanBssid = when {
             rawBssid.isNullOrBlank() || rawBssid == "02:00:00:00:00:00" -> null
             else -> rawBssid
         }
 
-        val freq = if (wifiInfo.frequency > 0) wifiInfo.frequency else null
-        val (ch, band) = VitalCalculators.frequencyToChannel(freq)
-        val linkSpeed = if (wifiInfo.linkSpeed > 0) wifiInfo.linkSpeed else null
+        val effectiveSsid = _wifiState.value.ssid ?: cleanSsid
+        val effectiveBssid = _wifiState.value.bssid ?: cleanBssid
 
-        val unavailableReason = when {
+        val redactedReason = when {
             !hasFine -> "ACCESS_FINE_LOCATION permission missing"
             !locOn -> "Location services disabled in Settings"
-            cleanSsid == null && cleanBssid == null -> "SSID/BSSID redacted by Android location gating"
+            !hasNearby -> "NEARBY_WIFI_DEVICES permission missing"
+            effectiveSsid == null && effectiveBssid == null -> "SSID/BSSID hidden by Android location gating"
+            effectiveSsid == null -> "SSID hidden by Android location gating"
+            effectiveBssid == null -> "BSSID hidden by Android location gating"
             else -> null
         }
 
-        val updatedLink = _currentLink.value.copy(
-            ssid = cleanSsid,
-            bssid = cleanBssid,
+        _wifiState.value = _wifiState.value.copy(
+            connected = true,
+            ssid = effectiveSsid,
+            bssid = effectiveBssid,
             rssi = rawRssi,
-            smoothedRssi = smoothed,
-            frequencyMhz = freq,
+            smoothedRssi = smoothedEmaRssi,
+            freqMhz = freq,
             channel = ch,
             band = band,
-            linkSpeedMbps = linkSpeed,
-            isConnected = true,
-            status = if (unavailableReason == null) MetricStatus.AVAILABLE else MetricStatus.PERMISSION_REQUIRED,
-            unavailableReason = unavailableReason,
+            linkMbps = linkSpeed,
+            redactedReason = redactedReason,
             timestamp = System.currentTimeMillis()
         )
-        _currentLink.value = updatedLink
 
-        // Feed live raw RSSI directly into proximity beep
-        proximityBeepService.updateRssi(rawRssi, cleanBssid, cleanSsid, isConnected = true)
+        _diagnostics.value = _diagnostics.value.copy(
+            callbackFlagActive = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
+            transportInfoClass = connInfo?.javaClass?.simpleName ?: _diagnostics.value.transportInfoClass,
+            rawSsid = rawSsid ?: _diagnostics.value.rawSsid,
+            rawBssid = rawBssid ?: _diagnostics.value.rawBssid,
+            rssi = rawRssi,
+            freqMhz = freq,
+            connected = true,
+            apiLevel = Build.VERSION.SDK_INT,
+            releaseVersion = Build.VERSION.RELEASE,
+            locationServicesEnabled = locOn,
+            hasFineLocation = hasFine,
+            hasNearbyDevices = hasNearby,
+            timestampMs = System.currentTimeMillis()
+        )
+
+        // Feed live raw RSSI directly into proximity beep (connected AP)
+        if (rawRssi != null) {
+            proximityBeepService.updateRssi(rawRssi, effectiveBssid, effectiveSsid, isConnected = true)
+        }
     }
 
-    private fun handleWifiLost() {
+    private fun handleNetworkCallbackEvent(wifiInfo: WifiInfo?) {
+        val connected = isWifiConnected()
+        val hasFine = ContextCompat.checkSelfPermission(
+            context, Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        val hasNearby = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(context, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
+        } else true
+        val locOn = isLocationServicesEnabled()
+        _isLocationEnabled.value = locOn
+
+        val rawSsid = wifiInfo?.ssid?.trim('"', ' ')
+        val cleanSsid = when {
+            rawSsid.isNullOrBlank() || rawSsid == "<unknown ssid>" -> null
+            else -> rawSsid
+        }
+        val rawBssid = wifiInfo?.bssid
+        val cleanBssid = when {
+            rawBssid.isNullOrBlank() || rawBssid == "02:00:00:00:00:00" -> null
+            else -> rawBssid
+        }
+
+        val effectiveSsid = cleanSsid ?: _wifiState.value.ssid
+        val effectiveBssid = cleanBssid ?: _wifiState.value.bssid
+
+        val rawRssi = if (wifiInfo != null && wifiInfo.rssi != -127 && wifiInfo.rssi != -999) {
+            wifiInfo.rssi
+        } else _wifiState.value.rssi
+
+        val freq = if (wifiInfo != null && wifiInfo.frequency > 0) wifiInfo.frequency else _wifiState.value.freqMhz
+        val (ch, band) = VitalCalculators.frequencyToChannel(freq)
+        val linkSpeed = if (wifiInfo != null && wifiInfo.linkSpeed > 0) wifiInfo.linkSpeed else _wifiState.value.linkMbps
+
+        val redactedReason = when {
+            !hasFine -> "ACCESS_FINE_LOCATION permission missing"
+            !locOn -> "Location services disabled in Settings"
+            !hasNearby -> "NEARBY_WIFI_DEVICES permission missing"
+            effectiveSsid == null && effectiveBssid == null -> "SSID/BSSID hidden by Android location gating"
+            effectiveSsid == null -> "SSID hidden by Android location gating"
+            effectiveBssid == null -> "BSSID hidden by Android location gating"
+            else -> null
+        }
+
+        _wifiState.value = _wifiState.value.copy(
+            connected = connected,
+            ssid = effectiveSsid,
+            bssid = effectiveBssid,
+            rssi = rawRssi ?: _wifiState.value.rssi,
+            freqMhz = freq ?: _wifiState.value.freqMhz,
+            channel = ch ?: _wifiState.value.channel,
+            band = band ?: _wifiState.value.band,
+            linkMbps = linkSpeed ?: _wifiState.value.linkMbps,
+            redactedReason = redactedReason,
+            timestamp = System.currentTimeMillis()
+        )
+
+        _diagnostics.value = _diagnostics.value.copy(
+            callbackFlagActive = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S,
+            transportInfoClass = wifiInfo?.javaClass?.simpleName ?: "null",
+            rawSsid = rawSsid ?: "null",
+            rawBssid = rawBssid ?: "null",
+            rssi = rawRssi,
+            freqMhz = freq,
+            connected = connected,
+            apiLevel = Build.VERSION.SDK_INT,
+            releaseVersion = Build.VERSION.RELEASE,
+            locationServicesEnabled = locOn,
+            hasFineLocation = hasFine,
+            hasNearbyDevices = hasNearby,
+            timestampMs = System.currentTimeMillis()
+        )
+
+        if (rawRssi != null) {
+            proximityBeepService.updateRssi(rawRssi, effectiveBssid, effectiveSsid, isConnected = connected)
+        }
+    }
+
+    private fun handleNetworkLost() {
+        val stillConnected = isWifiConnected()
+        if (stillConnected) return
+
         val hasFine = ContextCompat.checkSelfPermission(
             context, Manifest.permission.ACCESS_FINE_LOCATION
         ) == PackageManager.PERMISSION_GRANTED
@@ -393,11 +518,16 @@ class TelemetryEngine(
             else -> "Wi-Fi disconnected"
         }
 
-        _currentLink.value = WifiLinkSnapshot(
-            isConnected = false,
-            status = MetricStatus.UNAVAILABLE,
-            unavailableReason = reason,
+        _wifiState.value = com.example.netrix.model.WifiState(
+            connected = false,
+            redactedReason = reason,
             timestamp = System.currentTimeMillis()
+        )
+
+        _diagnostics.value = _diagnostics.value.copy(
+            connected = false,
+            rssi = null,
+            timestampMs = System.currentTimeMillis()
         )
     }
 
@@ -422,7 +552,7 @@ class TelemetryEngine(
         }
 
         val nowUs = SystemClock.elapsedRealtime() * 1000L
-        val connBssid = _currentLink.value.bssid
+        val connBssid = _wifiState.value.bssid
 
         val parsed = rawResults.mapNotNull { scan ->
             val bssid = scan.BSSID ?: return@mapNotNull null
@@ -477,50 +607,22 @@ class TelemetryEngine(
 
     private suspend fun collectTelemetryTick() {
         val now = System.currentTimeMillis()
-        val hasFineLocation = ContextCompat.checkSelfPermission(
-            context, Manifest.permission.ACCESS_FINE_LOCATION
-        ) == PackageManager.PERMISSION_GRANTED
         val locEnabled = isLocationServicesEnabled()
         _isLocationEnabled.value = locEnabled
 
         // 1. Check Connectivity & Link Properties
+        val isWifi = isWifiConnected()
         val activeNetwork = try { connectivityManager?.activeNetwork } catch (_: Throwable) { null }
-        val capabilities = try { activeNetwork?.let { connectivityManager?.getNetworkCapabilities(it) } } catch (_: Throwable) { null }
         val linkProperties: LinkProperties? = try { activeNetwork?.let { connectivityManager?.getLinkProperties(it) } } catch (_: Throwable) { null }
-        val isWifi = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
-
-        // 2. Wi-Fi Info from active transport
-        val wifiInfo: WifiInfo? = queryActiveWifiInfo()
-
-        val rawSsid = wifiInfo?.ssid?.trim('"', ' ')
-        val rawBssid = wifiInfo?.bssid
-
-        val reason = when {
-            !isWifi -> "Wi-Fi disconnected"
-            !hasFineLocation -> "ACCESS_FINE_LOCATION permission missing"
-            !locEnabled -> "Location services disabled in Settings"
-            rawSsid.isNullOrBlank() || rawSsid == "<unknown ssid>" -> "SSID redacted by Android location gating"
-            rawBssid.isNullOrBlank() || rawBssid == "02:00:00:00:00:00" -> "BSSID redacted by Android location gating"
-            else -> null
-        }
-
-        val ssid = if (isWifi && hasFineLocation && locEnabled && !rawSsid.isNullOrBlank() && rawSsid != "<unknown ssid>") rawSsid else null
-        val bssid = if (isWifi && hasFineLocation && locEnabled && !rawBssid.isNullOrBlank() && rawBssid != "02:00:00:00:00:00") rawBssid else null
 
         // Track Roaming Events
+        val bssid = _wifiState.value.bssid
         if (bssid != null && lastObservedBssid != null && bssid != lastObservedBssid) {
             _roamingEventsCount.value += 1
         }
         if (bssid != null) {
             lastObservedBssid = bssid
         }
-
-        val rssi = if (isWifi && wifiInfo != null && wifiInfo.rssi != -127 && wifiInfo.rssi != -999) wifiInfo.rssi else null
-        val freq = if (isWifi && wifiInfo != null && wifiInfo.frequency > 0) wifiInfo.frequency else null
-        val linkSpeed = if (isWifi && wifiInfo != null && wifiInfo.linkSpeed > 0) wifiInfo.linkSpeed else null
-
-        val (qualityVal, _) = VitalCalculators.calculateSignalQuality(rssi)
-        val (channelVal, bandStr) = VitalCalculators.frequencyToChannel(freq)
 
         // Gateway IP from LinkProperties
         val gatewayAddress = linkProperties?.routes?.firstOrNull { it.isDefaultRoute && it.gateway is Inet4Address }?.gateway
@@ -535,28 +637,7 @@ class TelemetryEngine(
         val prefixLength = linkProperties?.linkAddresses?.firstOrNull { it.address is Inet4Address }?.prefixLength
         val subnetStr = if (prefixLength != null) "/$prefixLength" else null
 
-        _currentLink.value = WifiLinkSnapshot(
-            ssid = ssid,
-            bssid = bssid,
-            rssi = rssi,
-            smoothedRssi = smoothedEmaRssi,
-            frequencyMhz = freq,
-            channel = channelVal,
-            band = bandStr,
-            linkSpeedMbps = linkSpeed,
-            isConnected = isWifi && rssi != null,
-            status = when {
-                !isWifi -> MetricStatus.UNAVAILABLE
-                !hasFineLocation -> MetricStatus.PERMISSION_REQUIRED
-                !locEnabled -> MetricStatus.UNAVAILABLE
-                rssi != null -> MetricStatus.AVAILABLE
-                else -> MetricStatus.UNAVAILABLE
-            },
-            unavailableReason = reason,
-            timestamp = now
-        )
-
-        // 3. Run Periodic Network Probes (Gateway & DNS)
+        // 2. Run Periodic Network Probes (Gateway & DNS)
         var gatewayProbeDuration: Long? = null
         var gatewayProbeStatus = MetricStatus.NOT_TESTED
         var dnsProbeDuration: Long? = null
@@ -590,14 +671,16 @@ class TelemetryEngine(
         val (packetLossVal, packetLossStatus) = VitalCalculators.calculatePacketLoss(totalProbesAttempted, totalProbesFailed)
         val (jitterVal, jitterStatus) = VitalCalculators.calculateRfc3550Jitter(recentLatencies)
 
+        val liveRssi = _wifiState.value.rssi
         val (healthScoreVal, healthScoreStatus) = VitalCalculators.calculateNetworkHealth(
-            rssi = rssi,
+            rssi = liveRssi,
             gatewayLatencyMs = gatewayProbeDuration,
             dnsResolveMs = dnsProbeDuration,
             internetReachable = wanReachable,
             packetLossPct = packetLossVal
         )
 
+        // Requirement D: Decouple Vitals. Each metric's error text may only describe its own failure.
         val records = mutableMapOf<VitalMetric, MetricRecord>()
         fun addRecord(
             metric: VitalMetric,
@@ -605,59 +688,173 @@ class TelemetryEngine(
             numeric: Double? = null,
             status: MetricStatus = MetricStatus.AVAILABLE,
             source: String = "Direct Probe",
-            method: String = if (metric.isDerived) "Validated Formula" else "Direct Probe"
+            method: String = if (metric.isDerived) "Validated Formula" else "Direct Probe",
+            unavailableText: String? = null
         ) {
+            val displayValue = value ?: unavailableText ?: status.label
             records[metric] = MetricRecord(
                 vital = metric,
-                valueString = value ?: (reason ?: status.label),
+                valueString = displayValue,
                 numericValue = numeric,
                 sourceApi = source,
                 calculationMethod = method,
                 timestamp = now,
-                status = if (value != null) status else if (reason != null) MetricStatus.UNAVAILABLE else status
+                status = status
             )
         }
 
-        // Populate 27 Vitals with real reasons when unavailable
-        addRecord(VitalMetric.SSID, ssid, source = "WifiInfo.ssid")
-        addRecord(VitalMetric.BSSID, bssid, source = "WifiInfo.bssid")
+        val currentWifi = _wifiState.value
+        val redactionText = currentWifi.redactedReason ?: "hidden by Android"
+
+        addRecord(
+            VitalMetric.SSID,
+            currentWifi.ssid,
+            status = if (currentWifi.ssid != null) MetricStatus.AVAILABLE else MetricStatus.PERMISSION_REQUIRED,
+            source = "WifiInfo.ssid",
+            unavailableText = redactionText
+        )
+        addRecord(
+            VitalMetric.BSSID,
+            currentWifi.bssid,
+            status = if (currentWifi.bssid != null) MetricStatus.AVAILABLE else MetricStatus.PERMISSION_REQUIRED,
+            source = "WifiInfo.bssid",
+            unavailableText = redactionText
+        )
         addRecord(
             VitalMetric.RSSI,
-            rssi?.let { "$it dBm (raw)" },
-            numeric = rssi?.toDouble(),
-            status = if (rssi != null) MetricStatus.AVAILABLE else MetricStatus.UNAVAILABLE,
-            source = "WifiInfo.rssi"
+            liveRssi?.let { "$it dBm (raw)" },
+            numeric = liveRssi?.toDouble(),
+            status = if (liveRssi != null) MetricStatus.AVAILABLE else MetricStatus.UNAVAILABLE,
+            source = "WifiInfo.rssi",
+            unavailableText = if (!isWifi) "Wi-Fi disconnected" else "No signal reading"
         )
+        val (qualityVal, _) = VitalCalculators.calculateSignalQuality(liveRssi)
         addRecord(
             VitalMetric.SIGNAL_QUALITY,
             qualityVal?.let { "$it%" },
             numeric = qualityVal?.toDouble(),
             status = if (qualityVal != null) MetricStatus.AVAILABLE else MetricStatus.UNAVAILABLE,
-            method = "RFC Formula ((RSSI + 100) * 2)"
+            method = "RFC Formula ((RSSI + 100) * 2)",
+            unavailableText = "Requires active RSSI"
         )
-        addRecord(VitalMetric.CHANNEL, channelVal?.toString(), numeric = channelVal?.toDouble(), source = "Frequency Lookup")
-        addRecord(VitalMetric.FREQUENCY, freq?.let { "$it MHz" }, numeric = freq?.toDouble(), source = "WifiInfo.frequency")
-        addRecord(VitalMetric.CHANNEL_WIDTH, "20 MHz", numeric = 20.0, source = "ScanResult.channelWidth")
-        addRecord(VitalMetric.LINK_RATE, linkSpeed?.let { "$it Mbps" }, numeric = linkSpeed?.toDouble(), source = "WifiInfo.linkSpeed")
-        addRecord(VitalMetric.NOISE_FLOOR, null, status = MetricStatus.UNAVAILABLE, source = "Restricted OEM API")
-        addRecord(VitalMetric.SNR, null, status = MetricStatus.UNAVAILABLE, source = "Restricted OEM API")
-        addRecord(VitalMetric.LATENCY, gatewayProbeDuration?.let { "$it ms" }, numeric = gatewayProbeDuration?.toDouble(), status = gatewayProbeStatus, source = "ICMP/TCP Echo")
-        addRecord(VitalMetric.PACKET_LOSS, packetLossVal?.let { String.format("%.1f%%", it) }, numeric = packetLossVal?.toDouble(), status = packetLossStatus, method = "Failed / Attempted Probes")
-        addRecord(VitalMetric.JITTER, jitterVal?.let { "$it ms" }, numeric = jitterVal?.toDouble(), status = jitterStatus, method = "RFC 3550 Jitter Formula")
-        addRecord(VitalMetric.GATEWAY_IP, gatewayIp, status = if (gatewayIp != null) MetricStatus.AVAILABLE else MetricStatus.UNAVAILABLE, source = "LinkProperties.routes")
-        addRecord(VitalMetric.GATEWAY_REACHABILITY, if (gatewayProbeStatus == MetricStatus.AVAILABLE) "OK" else null, status = gatewayProbeStatus, source = "TCP/ICMP Socket")
-        addRecord(VitalMetric.DNS_SERVERS, dnsString, status = if (dnsString != null) MetricStatus.AVAILABLE else MetricStatus.UNAVAILABLE, source = "LinkProperties.dnsServers")
-        addRecord(VitalMetric.DNS_RESOLVE_TIME, dnsProbeDuration?.let { "$it ms" }, numeric = dnsProbeDuration?.toDouble(), status = dnsProbeStatus, source = "InetAddress.getAllByName")
-        addRecord(VitalMetric.WAN_REACHABILITY, if (wanReachable == true) "OK" else null, status = wanStatus, source = "HTTPS 204 Probe")
-        addRecord(VitalMetric.PUBLIC_IP, null, status = MetricStatus.NOT_TESTED, source = "External IP Lookup")
-        addRecord(VitalMetric.SUBNET_PREFIX, subnetStr, status = if (subnetStr != null) MetricStatus.AVAILABLE else MetricStatus.UNAVAILABLE, source = "LinkAddress.prefixLength")
+        addRecord(
+            VitalMetric.CHANNEL,
+            currentWifi.channel?.toString(),
+            numeric = currentWifi.channel?.toDouble(),
+            status = if (currentWifi.channel != null) MetricStatus.AVAILABLE else MetricStatus.UNAVAILABLE,
+            source = "Frequency Lookup"
+        )
+        addRecord(
+            VitalMetric.FREQUENCY,
+            currentWifi.freqMhz?.let { "$it MHz" },
+            numeric = currentWifi.freqMhz?.toDouble(),
+            status = if (currentWifi.freqMhz != null) MetricStatus.AVAILABLE else MetricStatus.UNAVAILABLE,
+            source = "WifiInfo.frequency"
+        )
+        addRecord(
+            VitalMetric.CHANNEL_WIDTH,
+            "${currentWifi.widthMhz ?: 20} MHz",
+            numeric = (currentWifi.widthMhz ?: 20).toDouble(),
+            status = MetricStatus.AVAILABLE,
+            source = "ScanResult.channelWidth"
+        )
+        addRecord(
+            VitalMetric.LINK_RATE,
+            currentWifi.linkMbps?.let { "$it Mbps" },
+            numeric = currentWifi.linkMbps?.toDouble(),
+            status = if (currentWifi.linkMbps != null) MetricStatus.AVAILABLE else MetricStatus.UNAVAILABLE,
+            source = "WifiInfo.linkSpeed"
+        )
+        addRecord(VitalMetric.NOISE_FLOOR, null, status = MetricStatus.UNAVAILABLE, source = "Restricted OEM API", unavailableText = "Restricted OEM API")
+        addRecord(VitalMetric.SNR, null, status = MetricStatus.UNAVAILABLE, source = "Restricted OEM API", unavailableText = "Restricted OEM API")
+        addRecord(
+            VitalMetric.LATENCY,
+            gatewayProbeDuration?.let { "$it ms" },
+            numeric = gatewayProbeDuration?.toDouble(),
+            status = gatewayProbeStatus,
+            source = "ICMP/TCP Echo",
+            unavailableText = if (!isWifi) "Wi-Fi disconnected" else "Probe timed out"
+        )
+        addRecord(
+            VitalMetric.PACKET_LOSS,
+            packetLossVal?.let { String.format("%.1f%%", it) },
+            numeric = packetLossVal?.toDouble(),
+            status = packetLossStatus,
+            method = "Failed / Attempted Probes"
+        )
+        addRecord(
+            VitalMetric.JITTER,
+            jitterVal?.let { "$it ms" },
+            numeric = jitterVal?.toDouble(),
+            status = jitterStatus,
+            method = "RFC 3550 Jitter Formula",
+            unavailableText = "Need >= 2 latency probes"
+        )
+        addRecord(
+            VitalMetric.GATEWAY_IP,
+            gatewayIp,
+            status = if (gatewayIp != null) MetricStatus.AVAILABLE else MetricStatus.UNAVAILABLE,
+            source = "LinkProperties.routes",
+            unavailableText = "Default route not resolved"
+        )
+        addRecord(
+            VitalMetric.GATEWAY_REACHABILITY,
+            if (gatewayProbeStatus == MetricStatus.AVAILABLE) "OK" else null,
+            status = gatewayProbeStatus,
+            source = "TCP/ICMP Socket",
+            unavailableText = if (!isWifi) "Wi-Fi disconnected" else "Gateway unreachable"
+        )
+        addRecord(
+            VitalMetric.DNS_SERVERS,
+            dnsString,
+            status = if (dnsString != null) MetricStatus.AVAILABLE else MetricStatus.UNAVAILABLE,
+            source = "LinkProperties.dnsServers",
+            unavailableText = "No DNS servers configured"
+        )
+        addRecord(
+            VitalMetric.DNS_RESOLVE_TIME,
+            dnsProbeDuration?.let { "$it ms" },
+            numeric = dnsProbeDuration?.toDouble(),
+            status = dnsProbeStatus,
+            source = "InetAddress.getAllByName",
+            unavailableText = "DNS resolution failed"
+        )
+        addRecord(
+            VitalMetric.WAN_REACHABILITY,
+            if (wanReachable == true) "OK" else null,
+            status = wanStatus,
+            source = "HTTPS 204 Probe",
+            unavailableText = "Internet unreachable"
+        )
+        addRecord(VitalMetric.PUBLIC_IP, null, status = MetricStatus.NOT_TESTED, source = "External IP Lookup", unavailableText = "External IP lookup not run")
+        addRecord(
+            VitalMetric.SUBNET_PREFIX,
+            subnetStr,
+            status = if (subnetStr != null) MetricStatus.AVAILABLE else MetricStatus.UNAVAILABLE,
+            source = "LinkAddress.prefixLength",
+            unavailableText = "Subnet prefix unavailable"
+        )
 
         val dhcpLeaseSec = @Suppress("DEPRECATION") wifiManager?.dhcpInfo?.leaseDuration
-        addRecord(VitalMetric.DHCP_LEASE, if (dhcpLeaseSec != null && dhcpLeaseSec > 0) "${dhcpLeaseSec}s" else null, numeric = dhcpLeaseSec?.toDouble(), status = if (dhcpLeaseSec != null && dhcpLeaseSec > 0) MetricStatus.AVAILABLE else MetricStatus.UNAVAILABLE, source = "DhcpInfo")
-        addRecord(VitalMetric.CONNECTED_CLIENTS, null, status = MetricStatus.UNAVAILABLE, source = "Local Neighbor Probing")
+        addRecord(
+            VitalMetric.DHCP_LEASE,
+            if (dhcpLeaseSec != null && dhcpLeaseSec > 0) "${dhcpLeaseSec}s" else null,
+            numeric = dhcpLeaseSec?.toDouble(),
+            status = if (dhcpLeaseSec != null && dhcpLeaseSec > 0) MetricStatus.AVAILABLE else MetricStatus.UNAVAILABLE,
+            source = "DhcpInfo",
+            unavailableText = "DHCP lease unknown"
+        )
+        addRecord(VitalMetric.CONNECTED_CLIENTS, null, status = MetricStatus.UNAVAILABLE, source = "Local Neighbor Probing", unavailableText = "Local client discovery unavailable")
         addRecord(VitalMetric.DEAD_ZONE_COUNT, "0", numeric = 0.0, status = MetricStatus.AVAILABLE, method = "RSSI < -80 dBm Threshold")
-        addRecord(VitalMetric.COVERAGE_SCORE, null, status = MetricStatus.INSUFFICIENT_DATA, method = "Floor Plan Spatial Coverage")
-        addRecord(VitalMetric.NETWORK_HEALTH, healthScoreVal?.let { "$it/100" }, numeric = healthScoreVal?.toDouble(), status = healthScoreStatus, method = "Composite Weighted Metric")
+        addRecord(VitalMetric.COVERAGE_SCORE, null, status = MetricStatus.INSUFFICIENT_DATA, method = "Floor Plan Spatial Coverage", unavailableText = "Need >= 3 survey points")
+        addRecord(
+            VitalMetric.NETWORK_HEALTH,
+            healthScoreVal?.let { "$it/100" },
+            numeric = healthScoreVal?.toDouble(),
+            status = healthScoreStatus,
+            method = "Composite Weighted Metric",
+            unavailableText = "Insufficient metrics"
+        )
         addRecord(VitalMetric.ROAMING_EVENTS, "${_roamingEventsCount.value}", numeric = _roamingEventsCount.value.toDouble(), status = MetricStatus.AVAILABLE, source = "BSSID Transition Detector")
         addRecord(VitalMetric.SAMPLE_TEST_COUNT, "$totalProbesAttempted probes", numeric = totalProbesAttempted.toDouble(), status = MetricStatus.AVAILABLE, source = "Active Probe Counter")
 
@@ -667,13 +864,13 @@ class TelemetryEngine(
         val observation = NetworkObservationEntity(
             sessionId = activeSessionId,
             timestamp = now,
-            ssid = ssid,
+            ssid = currentWifi.ssid,
             bssid = bssid,
-            rssi = rssi,
+            rssi = liveRssi,
             signalQuality = qualityVal,
-            channel = channelVal,
-            frequencyMhz = freq,
-            linkSpeedMbps = linkSpeed,
+            channel = currentWifi.channel,
+            frequencyMhz = currentWifi.freqMhz,
+            linkSpeedMbps = currentWifi.linkMbps,
             gatewayIp = gatewayIp,
             gatewayLatencyMs = gatewayProbeDuration,
             dnsResolveMs = dnsProbeDuration,

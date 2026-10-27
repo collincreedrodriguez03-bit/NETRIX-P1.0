@@ -1,14 +1,19 @@
 package com.example
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
@@ -38,11 +43,13 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.core.content.ContextCompat
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -112,7 +119,35 @@ fun MainTerminalApp(viewModel: NetrixViewModel) {
     val currentTab by viewModel.currentTab.collectAsState()
     val isDrawerOpen by viewModel.isDrawerOpen.collectAsState()
     val samples by viewModel.samples.collectAsState()
-    val link by viewModel.telemetryEngine.currentLink.collectAsState()
+    val wifiState by viewModel.telemetryEngine.wifiState.collectAsState()
+
+    // Automatic startup permission request for real Wi-Fi, Camera, and Sensors
+    val permissionsToRequest = remember {
+        val list = mutableListOf(
+            Manifest.permission.ACCESS_FINE_LOCATION,
+            Manifest.permission.ACCESS_COARSE_LOCATION,
+            Manifest.permission.CAMERA
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            list.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        }
+        list.toTypedArray()
+    }
+
+    val permissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { _ ->
+        viewModel.telemetryEngine.triggerApScan()
+    }
+
+    LaunchedEffect(Unit) {
+        val anyMissing = permissionsToRequest.any {
+            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
+        }
+        if (anyMissing) {
+            permissionLauncher.launch(permissionsToRequest)
+        }
+    }
 
     // Requirement 0: Check for last_crash.txt on startup
     var crashLogText by remember {
@@ -147,7 +182,7 @@ fun MainTerminalApp(viewModel: NetrixViewModel) {
                 .padding(innerPadding)
         ) {
             Column(modifier = Modifier.fillMaxSize()) {
-                // Top Terminal Bar
+                // Top Terminal Bar (Requirement E: Header: "AP: <ssid | hidden by Android>", BSSID last 4 chars when readable)
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
@@ -187,14 +222,27 @@ fun MainTerminalApp(viewModel: NetrixViewModel) {
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
-                        StatusIndicatorDot(isActive = link.isConnected)
-                        val bandColor = SignalRatingBand.colorForRssi(link.rssi)
+                        StatusIndicatorDot(isActive = wifiState.connected)
+                        val apDisplay = if (wifiState.connected) {
+                            val ssidText = wifiState.ssid ?: "hidden by Android"
+                            val bssidSuffix = wifiState.bssid?.takeLast(4)?.let { " ($it)" } ?: ""
+                            "AP: $ssidText$bssidSuffix"
+                        } else {
+                            "AP: Disconnected"
+                        }
+                        val rssiText = if (wifiState.connected) {
+                            wifiState.rssi?.let { "$it dBm" } ?: "--"
+                        } else {
+                            "OFFLINE"
+                        }
+                        val bandColor = SignalRatingBand.colorForRssi(wifiState.rssi)
                         Text(
-                            text = link.rssi?.let { "$it dBm" } ?: (link.unavailableReason ?: "OFFLINE"),
-                            color = if (link.isConnected) bandColor else NetrixTextDim,
-                            fontSize = 10.sp,
+                            text = "$apDisplay | $rssiText",
+                            color = if (wifiState.connected) bandColor else NetrixTextDim,
+                            fontSize = 9.5.sp,
                             fontWeight = FontWeight.Bold,
-                            fontFamily = FontFamily.Monospace
+                            fontFamily = FontFamily.Monospace,
+                            maxLines = 1
                         )
                     }
                 }
@@ -239,7 +287,7 @@ fun MainTerminalApp(viewModel: NetrixViewModel) {
                     currentTab = currentTab,
                     onSelectTab = { viewModel.selectTab(it) },
                     onCloseDrawer = { viewModel.toggleDrawer() },
-                    linkConnected = link.isConnected,
+                    linkConnected = wifiState.connected,
                     samplesCount = samples.size
                 )
             }

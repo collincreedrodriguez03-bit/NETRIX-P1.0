@@ -66,7 +66,8 @@ fun ToolsScreen(
     val allSessions by viewModel.allSessions.collectAsState()
     val observations by viewModel.recentObservations.collectAsState()
     val isLocationEnabled by viewModel.telemetryEngine.isLocationEnabled.collectAsState()
-    val currentLink by viewModel.telemetryEngine.currentLink.collectAsState()
+    val wifiState by viewModel.telemetryEngine.wifiState.collectAsState()
+    val diagnostics by viewModel.telemetryEngine.diagnostics.collectAsState()
     val discoveredAps by viewModel.telemetryEngine.discoveredAps.collectAsState()
 
     val beepService = viewModel.telemetryEngine.proximityBeepService
@@ -109,6 +110,79 @@ fun ToolsScreen(
             fontFamily = FontFamily.Monospace
         )
 
+        // Requirement F: Raw Telemetry Diagnostics Panel (TOOLS tab)
+        TerminalCard(title = "Raw Diagnostic Telemetry (Requirement F)") {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                val flagText = if (diagnostics.callbackFlagActive) "ON (FLAG_INCLUDE_LOCATION_INFO)" else "OFF (Pre-API 31)"
+                val connText = if (diagnostics.connected) "CONNECTED (activeNetwork TRANSPORT_WIFI)" else "DISCONNECTED"
+                val rssiText = diagnostics.rssi?.let { "$it dBm" } ?: "null"
+                val freqText = diagnostics.freqMhz?.let { "$it MHz" } ?: "null"
+                val apiText = "API ${diagnostics.apiLevel} (Android ${diagnostics.releaseVersion})"
+
+                val diagReport = """
+=== NETRIX TELEMETRY RAW DIAGNOSTIC ===
+Callback Flag: $flagText
+TransportInfo Class: ${diagnostics.transportInfoClass}
+Raw SSID String: "${diagnostics.rawSsid}"
+Raw BSSID String: "${diagnostics.rawBssid}"
+Raw RSSI: $rssiText
+Frequency: $freqText
+Connected Flag: ${diagnostics.connected}
+Android API Level: $apiText
+Location Services: ${if (diagnostics.locationServicesEnabled) "ENABLED" else "DISABLED"}
+ACCESS_FINE_LOCATION: ${if (diagnostics.hasFineLocation) "GRANTED" else "DENIED"}
+NEARBY_WIFI_DEVICES: ${if (diagnostics.hasNearbyDevices) "GRANTED" else "DENIED / N/A"}
+Timestamp: ${diagnostics.timestampMs}
+=======================================
+                """.trimIndent()
+
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("CALLBACK FLAG:", color = NetrixTextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                    Text(flagText, color = if (diagnostics.callbackFlagActive) NetrixGreen else NetrixYellow, fontSize = 9.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("TRANSPORTINFO CLASS:", color = NetrixTextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                    Text(diagnostics.transportInfoClass, color = NetrixText, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("RAW SSID STRING:", color = NetrixTextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                    Text("\"${diagnostics.rawSsid}\"", color = if (diagnostics.rawSsid == "<unknown ssid>" || diagnostics.rawSsid == "None") NetrixYellow else NetrixPrimary, fontSize = 9.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("RAW BSSID STRING:", color = NetrixTextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                    Text("\"${diagnostics.rawBssid}\"", color = if (diagnostics.rawBssid == "02:00:00:00:00:00" || diagnostics.rawBssid == "None") NetrixYellow else NetrixPrimary, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("RAW RSSI:", color = NetrixTextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                    Text(rssiText, color = SignalRatingBand.colorForRssi(diagnostics.rssi), fontSize = 9.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("FREQUENCY:", color = NetrixTextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                    Text(freqText, color = NetrixText, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("CONNECTED FLAG:", color = NetrixTextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                    Text(connText, color = if (diagnostics.connected) NetrixGreen else NetrixRed, fontSize = 9.sp, fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Bold)
+                }
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                    Text("ANDROID API LEVEL:", color = NetrixTextDim, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                    Text(apiText, color = NetrixText, fontSize = 9.sp, fontFamily = FontFamily.Monospace)
+                }
+
+                Spacer(modifier = Modifier.height(4.dp))
+                TerminalButton(
+                    text = "[COPY RAW DIAGNOSTICS]",
+                    onClick = {
+                        val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                        clipboard.setPrimaryClip(ClipData.newPlainText("NETRIX_DIAGNOSTICS", diagReport))
+                        Toast.makeText(context, "Raw diagnostics copied to clipboard", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.fillMaxWidth().height(32.dp),
+                    color = NetrixSecondary
+                )
+            }
+        }
+
         // 1. Requirement 5: Proximity Beep Controller (Toggle in Tools, default off)
         TerminalCard(title = "Proximity Beep Generator (880 Hz PCM)") {
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -125,7 +199,7 @@ fun ToolsScreen(
                             fontSize = 10.sp,
                             fontFamily = FontFamily.Monospace
                         )
-                        val targetLabel = beepTargetSsid ?: beepTargetBssid ?: currentLink.ssid ?: "Strongest AP"
+                        val targetLabel = beepTargetSsid ?: beepTargetBssid ?: wifiState.ssid ?: "Strongest AP"
                         Text(
                             text = "Target AP: $targetLabel",
                             color = NetrixPrimary,
@@ -138,8 +212,8 @@ fun ToolsScreen(
                         text = if (isBeepEnabled) "[BEEP: ON]" else "[BEEP: OFF]",
                         isSelected = isBeepEnabled,
                         onClick = {
-                            if (!isBeepEnabled && beepTargetBssid == null && currentLink.bssid != null) {
-                                beepService.setTarget(currentLink.bssid, currentLink.ssid, isConnected = true)
+                            if (!isBeepEnabled && beepTargetBssid == null && wifiState.bssid != null) {
+                                beepService.setTarget(wifiState.bssid, wifiState.ssid, isConnected = true)
                             }
                             beepService.toggleBeep(!isBeepEnabled)
                         },
@@ -165,7 +239,7 @@ fun ToolsScreen(
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
                     Text(
-                        text = "Strength: ${(beepStrength * 100).toInt()}% (RSSI ${beepRssi ?: currentLink.rssi ?: "N/A"} dBm)",
+                        text = "Strength: ${(beepStrength * 100).toInt()}% (RSSI ${beepRssi ?: wifiState.rssi ?: "N/A"} dBm)",
                         color = NetrixText,
                         fontSize = 8.5.sp,
                         fontFamily = FontFamily.Monospace
@@ -190,7 +264,7 @@ fun ToolsScreen(
                         modifier = Modifier
                             .fillMaxWidth(beepStrength.coerceIn(0.01f, 1f))
                             .fillMaxSize()
-                            .background(SignalRatingBand.colorForRssi(beepRssi ?: currentLink.rssi))
+                            .background(SignalRatingBand.colorForRssi(beepRssi ?: wifiState.rssi))
                     )
                 }
 

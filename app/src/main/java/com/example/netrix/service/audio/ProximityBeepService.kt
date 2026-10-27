@@ -80,7 +80,7 @@ class ProximityBeepService(
                 AudioTrack.Builder()
                     .setAudioAttributes(
                         AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
+                            .setUsage(AudioAttributes.USAGE_ASSISTANCE_SONIFICATION)
                             .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                             .build()
                     )
@@ -188,7 +188,9 @@ class ProximityBeepService(
                 if (audioTrack == null || audioTrack?.state != AudioTrack.STATE_INITIALIZED) {
                     initAudioTrack()
                 }
-                audioTrack?.play()
+                if (audioTrack?.playState != AudioTrack.PLAYSTATE_PLAYING) {
+                    audioTrack?.play()
+                }
             } catch (t: Throwable) {
                 Log.e(TAG, "Error starting AudioTrack playback: ${t.message}", t)
             }
@@ -200,10 +202,7 @@ class ProximityBeepService(
                 // Volume = lerp(0.1, 1.0, strength)
                 val volume = (0.1f + (1.0f - 0.1f) * strength)
 
-                playSineTone(durationMs, volume)
-
-                // Fixed ~300 ms inter-beep gap
-                delay(INTER_BEEP_GAP_MS)
+                playSineToneWithGap(durationMs, volume, INTER_BEEP_GAP_MS)
             }
         }
     }
@@ -219,22 +218,25 @@ class ProximityBeepService(
         } catch (_: Throwable) {}
     }
 
-    private fun playSineTone(durationMs: Long, volume: Float) {
+    private fun playSineToneWithGap(durationMs: Long, volume: Float, gapMs: Long) {
         val track = audioTrack ?: return
         if (track.state != AudioTrack.STATE_INITIALIZED) return
 
-        val numSamples = ((SAMPLE_RATE * durationMs) / 1000).toInt().coerceAtLeast(100)
+        val toneSamples = ((SAMPLE_RATE * durationMs) / 1000).toInt().coerceAtLeast(100)
         val fadeSamples = ((SAMPLE_RATE * FADE_MS) / 1000).toInt().coerceAtLeast(1)
-        val pcmData = ShortArray(numSamples)
+        val gapSamples = ((SAMPLE_RATE * gapMs) / 1000).toInt().coerceAtLeast(100)
+
+        val totalSamples = toneSamples + gapSamples
+        val pcmData = ShortArray(totalSamples)
 
         val angleDelta = 2.0 * PI * FREQUENCY_HZ / SAMPLE_RATE
 
-        for (i in 0 until numSamples) {
+        // 1. Synthesize 880 Hz sine wave tone with 5 ms fade in/out
+        for (i in 0 until toneSamples) {
             val raw = sin(angleDelta * i)
-            // 5 ms linear envelope attack and release
             val envelope = when {
                 i < fadeSamples -> i.toFloat() / fadeSamples.toFloat()
-                i >= numSamples - fadeSamples -> (numSamples - 1 - i).toFloat() / fadeSamples.toFloat()
+                i >= toneSamples - fadeSamples -> (toneSamples - 1 - i).toFloat() / fadeSamples.toFloat()
                 else -> 1.0f
             }
             val sampleVal = (raw * envelope * volume * Short.MAX_VALUE).toInt()
@@ -243,8 +245,14 @@ class ProximityBeepService(
             pcmData[i] = sampleVal
         }
 
+        // 2. Remaining gapSamples are already 0 (silence)
+
         try {
-            track.write(pcmData, 0, pcmData.size)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                track.write(pcmData, 0, pcmData.size, AudioTrack.WRITE_BLOCKING)
+            } else {
+                track.write(pcmData, 0, pcmData.size)
+            }
         } catch (t: Throwable) {
             Log.e(TAG, "AudioTrack write failed: ${t.message}")
         }

@@ -159,9 +159,9 @@ class NetrixViewModel(application: Application) : AndroidViewModel(application) 
             return Pair(false, "System Location services are OFF. Please enable Location in Android Settings.")
         }
 
-        // 4. Wi-Fi connected
-        val link = telemetryEngine.currentLink.value
-        if (!link.isConnected || link.rssi == null) {
+        // 4. Wi-Fi connected (Requirement B: Survey gate uses wifiState.connected)
+        val wifi = telemetryEngine.wifiState.value
+        if (!wifi.connected) {
             return Pair(false, "Device is not connected to a Wi-Fi access point.")
         }
 
@@ -249,7 +249,7 @@ class NetrixViewModel(application: Application) : AndroidViewModel(application) 
 
     fun addCheckpoint(x: Float, y: Float) {
         val session = _activeSession.value ?: return
-        val link = telemetryEngine.currentLink.value
+        val link = telemetryEngine.wifiState.value
         val vitals = telemetryEngine.vitals.value
         val latency = vitals[VitalMetric.LATENCY]?.numericValue?.toLong()
         val loss = vitals[VitalMetric.PACKET_LOSS]?.numericValue?.toFloat()
@@ -266,7 +266,7 @@ class NetrixViewModel(application: Application) : AndroidViewModel(application) 
             packetLossRate = loss,
             bssid = link.bssid,
             ssid = link.ssid,
-            frequencyMhz = link.frequencyMhz,
+            frequencyMhz = link.freqMhz,
             isCheckpoint = true,
             isUncertain = false
         )
@@ -325,7 +325,7 @@ class NetrixViewModel(application: Application) : AndroidViewModel(application) 
         sampleJob = viewModelScope.launch {
             while (isActive && _surveyRunning.value) {
                 delay(500L) // 2 Hz sampling cadence
-                val link = telemetryEngine.currentLink.value
+                val link = telemetryEngine.wifiState.value
                 val vitals = telemetryEngine.vitals.value
 
                 val sample = SpatialSampleEntity(
@@ -340,7 +340,7 @@ class NetrixViewModel(application: Application) : AndroidViewModel(application) 
                     packetLossRate = vitals[VitalMetric.PACKET_LOSS]?.numericValue?.toFloat(),
                     bssid = link.bssid,
                     ssid = link.ssid,
-                    frequencyMhz = link.frequencyMhz,
+                    frequencyMhz = link.freqMhz,
                     isCheckpoint = false,
                     isUncertain = true
                 )
@@ -373,7 +373,7 @@ class NetrixViewModel(application: Application) : AndroidViewModel(application) 
             appendLog("==========================================")
 
             // Test 1: Gateway Reachability
-            val link = telemetryEngine.currentLink.value
+            val link = telemetryEngine.wifiState.value
             val vitals = telemetryEngine.vitals.value
             val gatewayIp = vitals[VitalMetric.GATEWAY_IP]?.valueString
             appendLog("\n[PROBE 1/4] Gateway Reachability ($gatewayIp)...")

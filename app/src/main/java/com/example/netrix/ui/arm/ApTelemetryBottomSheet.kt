@@ -60,8 +60,8 @@ fun ApTelemetryBottomSheet(
         discoveredAps.find { it.bssid.equals(bssid, ignoreCase = true) }
     }
 
-    val isConnectedAp = currentLink.isConnected && currentLink.bssid?.equals(bssid, ignoreCase = true) == true
-    val ssid = if (isConnectedAp) currentLink.ssid ?: apInfo?.ssid else apInfo?.ssid ?: "Unknown SSID"
+    val isConnectedAp = currentLink.connected && currentLink.bssid?.equals(bssid, ignoreCase = true) == true
+    val ssid = if (isConnectedAp) currentLink.ssid ?: "hidden by Android" else apInfo?.ssid ?: "Unknown SSID"
     val liveRawRssi = if (isConnectedAp) currentLink.rssi else apInfo?.rssi
     val bandRating = SignalRatingBand.fromRssi(liveRawRssi)
 
@@ -171,7 +171,7 @@ fun ApTelemetryBottomSheet(
                         fontFamily = FontFamily.Monospace
                     )
                     Text(
-                        text = "WIDTH: ${apInfo?.channelWidthMhz ?: currentLink.channelWidthMhz ?: 20} MHz",
+                        text = "WIDTH: ${apInfo?.channelWidthMhz ?: currentLink.widthMhz ?: 20} MHz",
                         color = NetrixTextDim,
                         fontSize = 8.sp,
                         fontFamily = FontFamily.Monospace

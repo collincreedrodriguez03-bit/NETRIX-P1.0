@@ -86,23 +86,51 @@ data class MetricRecord(
 )
 
 /**
- * Snapshot of current Wi-Fi link parameters.
+ * Canonical Single Source of Truth for current Wi-Fi link parameters.
+ * Requirements:
+ * connected, ssid?, bssid?, rssi?, freqMhz?, widthMhz?, linkMbps?, redactedReason?
  */
-data class WifiLinkSnapshot(
+data class WifiState(
+    val connected: Boolean = false,
     val ssid: String? = null,
     val bssid: String? = null,
     val rssi: Int? = null,
-    val smoothedRssi: Float? = null,
-    val frequencyMhz: Int? = null,
-    val linkSpeedMbps: Int? = null,
+    val freqMhz: Int? = null,
+    val widthMhz: Int? = null,
+    val linkMbps: Int? = null,
+    val redactedReason: String? = null,
     val channel: Int? = null,
     val band: String? = null,
-    val channelWidthMhz: Int? = null,
+    val smoothedRssi: Float? = null,
     val security: String? = null,
-    val isConnected: Boolean = false,
-    val status: MetricStatus = MetricStatus.UNAVAILABLE,
-    val unavailableReason: String? = null,
     val timestamp: Long = System.currentTimeMillis()
+) {
+    val isConnected: Boolean get() = connected
+    val frequencyMhz: Int? get() = freqMhz
+    val channelWidthMhz: Int? get() = widthMhz
+    val linkSpeedMbps: Int? get() = linkMbps
+    val unavailableReason: String? get() = redactedReason
+}
+
+typealias WifiLinkSnapshot = WifiState
+
+/**
+ * Raw Diagnostic Telemetry for Tools Screen inspection (Requirement F).
+ */
+data class WifiDiagnostics(
+    val callbackFlagActive: Boolean = false,
+    val transportInfoClass: String = "None",
+    val rawSsid: String = "None",
+    val rawBssid: String = "None",
+    val rssi: Int? = null,
+    val freqMhz: Int? = null,
+    val connected: Boolean = false,
+    val apiLevel: Int = 0,
+    val releaseVersion: String = "",
+    val locationServicesEnabled: Boolean = false,
+    val hasFineLocation: Boolean = false,
+    val hasNearbyDevices: Boolean = false,
+    val timestampMs: Long = System.currentTimeMillis()
 )
 
 /**
